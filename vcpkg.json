@@ -1,0 +1,7 @@
+{
+	"name": "vulkan-app",
+	"version-string": "0.1.0",
+	"dependencies": [
+		"sdl3"
+	]
+}

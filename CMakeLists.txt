@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -9,10 +10,16 @@ set(SOURCES
 	src/main.cpp
 )
 
+find_package(SDL3 CONFIG REQUIRED)
+
 add_executable(VulkanApp)
 
 target_sources(VulkanApp PRIVATE
 	${SOURCES}
+)
+
+target_link_libraries(VulkanApp PRIVATE
+	SDL3::SDL3
 )
 
 target_include_directories(VulkanApp PRIVATE

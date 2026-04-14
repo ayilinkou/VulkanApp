@@ -28,6 +28,10 @@ target_include_directories(VulkanApp PRIVATE
 	src/
 )
 
+target_compile_definitions(VulkanApp PRIVATE
+    VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
+)
+
 target_compile_options(VulkanApp PRIVATE
     $<$<CONFIG:Debug>:-O0 -g>
     $<$<CONFIG:Release>:-O3>

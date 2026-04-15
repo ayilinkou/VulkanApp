@@ -1,21 +1,39 @@
 #include <algorithm>
-#include <cstdlib>
-#include <exception>
+#include <cstdint>
 #include <format>
 #include <iostream>
 #include <stdexcept>
+#include <vulkan/vulkan.hpp>
 
-#include "SDL3/SDL_error.h"
-#include "SDL3/SDL_log.h"
-#include "SDL3/SDL_messagebox.h"
-#include "SDL3/SDL_stdinc.h"
+#include "SDL3/SDL.h"
 #include "SDL3/SDL_video.h"
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_vulkan.h>
-#include <vulkan/vulkan_core.h>
+#include "SDL3/SDL_vulkan.h"
 
 #include "vulkan/vulkan.hpp"
 #include "vulkan/vulkan_raii.hpp"
+
+constexpr uint32_t WIDTH = 800;
+constexpr uint32_t HEIGHT = 600;
+
+std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
+
+#ifdef NDEBUG
+constexpr bool bEnableValidationLayers = false;
+#else
+constexpr bool bEnableValidationLayers = true;
+#endif
+
+static VKAPI_ATTR vk::Bool32 VKAPI_CALL
+DebugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
+              vk::DebugUtilsMessageTypeFlagsEXT type,
+              const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
+              void* pUserData)
+{
+    std::cerr << "validation layer: type " << to_string(type)
+              << " msg: " << pCallbackData->pMessage << std::endl;
+
+    return vk::False;
+}
 
 class SDLException : public std::runtime_error
 {
@@ -55,16 +73,24 @@ public:
 private:
     void Init()
     {
-		InitSDL();
+        InitSDL();
         InitVulkan();
+        std::cout << "Init() succeeded!\n";
     }
 
-    void InitVulkan() { CreateInstance(); }
+    void InitVulkan()
+    {
+        CreateInstance();
+        SetupDebugMessenger();
+    }
 
     void InitSDL()
     {
         if (!SDL_Init(SDL_INIT_VIDEO))
             throw SDLException("Failed to initialise SDL!");
+
+        std::cout << "SDL video driver: " << SDL_GetCurrentVideoDriver()
+                  << "\n";
 
         if (!SDL_Vulkan_LoadLibrary(nullptr))
             throw SDLException("Failed to load Vulkan library!");
@@ -92,6 +118,7 @@ private:
             .engineVersion = VK_MAKE_VERSION(1, 0, 0),
             .apiVersion = vk::ApiVersion14};
 
+        // extensions
         Uint32 countInstanceExtensions;
         const char* const* instanceExtensions =
             SDL_Vulkan_GetInstanceExtensions(&countInstanceExtensions);
@@ -99,40 +126,95 @@ private:
         if (countInstanceExtensions == 0)
             throw std::runtime_error("No available instance extensions found!");
 
-        std::vector<const char*> extensions(countInstanceExtensions);
-        memcpy(extensions.data(), instanceExtensions,
+        std::vector<const char*> requiredExtensions(countInstanceExtensions);
+        memcpy(requiredExtensions.data(), instanceExtensions,
                countInstanceExtensions * sizeof(const char*));
+        requiredExtensions.push_back(vk::EXTDebugUtilsExtensionName);
 
         auto extensionProperties =
             context.enumerateInstanceExtensionProperties();
 
-        std::cout << "Available extensions:\n";
-        for (const auto& extensionProp : extensionProperties)
+        auto unsupportedExtensionIt = std::ranges::find_if(
+            requiredExtensions,
+            [&extensionProperties](auto const& requiredExtension)
+            {
+                return std::ranges::none_of(
+                    extensionProperties,
+                    [requiredExtension](auto const& extensionProperty)
+                    {
+                        return strcmp(extensionProperty.extensionName,
+                                      requiredExtension) == 0;
+                    });
+            });
+
+        if (unsupportedExtensionIt != requiredExtensions.end())
+            throw std::runtime_error("Required extension not supported: " +
+                                     std::string(*unsupportedExtensionIt));
+
+        // layers
+        std::vector<const char*> requiredLayers;
+        if (bEnableValidationLayers)
         {
-            std::cout << '\t' << extensionProp.extensionName << '\n';
+            requiredLayers.assign(validationLayers.begin(),
+                                  validationLayers.end());
         }
 
-        for (int i = 0; i < countInstanceExtensions; i++)
-        {
-            if (std::ranges::none_of(
-                    extensionProperties, [ext = extensions[i]](auto const& prop)
-                    { return strcmp(prop.extensionName, ext) == 0; }))
-                throw std::runtime_error(
-                    "Required SDL extension not supported: " +
-                    std::string(extensions[i]));
-        }
+        auto layerProperties = context.enumerateInstanceLayerProperties();
+
+        auto unsupportedLayerIt = std::ranges::find_if(
+            requiredLayers,
+            [&layerProperties](auto const& requiredLayer)
+            {
+                return std::ranges::none_of(
+                    layerProperties,
+                    [requiredLayer](auto const& layerProperty)
+                    {
+                        return strcmp(layerProperty.layerName, requiredLayer) ==
+                               0;
+                    });
+            });
+
+        if (unsupportedLayerIt != requiredLayers.end())
+            throw std::runtime_error("Required layer not supported: " +
+                                     std::string(*unsupportedLayerIt));
 
         vk::InstanceCreateInfo createInfo{
             .pApplicationInfo = &appInfo,
-            .enabledExtensionCount = (uint32_t)extensions.size(),
-            .ppEnabledExtensionNames = extensions.data()};
+            .enabledLayerCount = (uint32_t)requiredLayers.size(),
+            .ppEnabledLayerNames = requiredLayers.data(),
+            .enabledExtensionCount = (uint32_t)requiredExtensions.size(),
+            .ppEnabledExtensionNames = requiredExtensions.data()};
 
         instance = vk::raii::Instance(context, createInfo);
+    }
+
+    void SetupDebugMessenger()
+    {
+        if (!bEnableValidationLayers)
+            return;
+
+        vk::DebugUtilsMessageSeverityFlagsEXT severityFlags(
+            vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
+            vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+            vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo |
+            vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose);
+        vk::DebugUtilsMessageTypeFlagsEXT messageTypeFlags(
+            vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+            vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance |
+            vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral);
+
+        vk::DebugUtilsMessengerCreateInfoEXT createInfo{
+            .messageSeverity = severityFlags,
+            .messageType = messageTypeFlags,
+            .pfnUserCallback = &DebugCallback};
+
+        debugMessenger = instance.createDebugUtilsMessengerEXT(createInfo);
     }
 
 private:
     vk::raii::Instance instance = nullptr;
     vk::raii::Context context;
+    vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
 
     SDL_Window* pWindow = nullptr;
 };

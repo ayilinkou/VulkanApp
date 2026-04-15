@@ -82,6 +82,7 @@ private:
     {
         CreateInstance();
         SetupDebugMessenger();
+        PickPhysicalDevice();
     }
 
     void InitSDL()
@@ -211,10 +212,66 @@ private:
         debugMessenger = instance.createDebugUtilsMessengerEXT(createInfo);
     }
 
+    bool IsPhysicalDeviceSuitable(const vk::raii::PhysicalDevice& device)
+    {
+        auto properties = device.getProperties();
+
+        bool bSupportsVulkan13 = properties.apiVersion >= vk::ApiVersion13;
+
+        auto queueFamilies = device.getQueueFamilyProperties();
+        bool bSupportsGraphicsQ = std::ranges::any_of(
+            queueFamilies, [](const auto& qfp)
+            { return !!(qfp.queueFlags & vk::QueueFlagBits::eGraphics); });
+
+        std::vector<const char*> requiredExtensions = {
+            vk::KHRSwapchainExtensionName};
+        auto availableExtensions = device.enumerateDeviceExtensionProperties();
+        bool bSupportsAllExtensions = std::ranges::all_of(
+            requiredExtensions,
+            [&availableExtensions](const auto& requiredExtension)
+            {
+                return std::ranges::any_of(
+                    availableExtensions,
+                    [requiredExtension](const auto& availableExtension)
+                    {
+                        return strcmp(availableExtension.extensionName,
+                                      requiredExtension) == 0;
+                    });
+            });
+
+        auto features = device.getFeatures2<
+            vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
+            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
+        bool bSupportsAllFeatures =
+            features.get<vk::PhysicalDeviceVulkan13Features>()
+                .dynamicRendering &&
+            features.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>()
+                .extendedDynamicState;
+
+        if (bSupportsVulkan13 && bSupportsGraphicsQ && bSupportsAllExtensions &&
+            bSupportsAllFeatures)
+            return true;
+        return false;
+    }
+
+    void PickPhysicalDevice()
+    {
+        auto devices = instance.enumeratePhysicalDevices();
+        const auto deviceIt =
+            std::ranges::find_if(devices, [&](const auto& device)
+                                 { return IsPhysicalDeviceSuitable(device); });
+
+        if (deviceIt == devices.end())
+            std::runtime_error("Failed to find a suitable GPU!");
+
+        physicalDevice = *deviceIt;
+    }
+
 private:
+	vk::raii::Context context;
     vk::raii::Instance instance = nullptr;
-    vk::raii::Context context;
     vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
+    vk::raii::PhysicalDevice physicalDevice = nullptr;
 
     SDL_Window* pWindow = nullptr;
 };

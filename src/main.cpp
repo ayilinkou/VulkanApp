@@ -9,7 +9,6 @@
 #include "SDL3/SDL_video.h"
 #include "SDL3/SDL_vulkan.h"
 
-#include "vulkan/vulkan.hpp"
 #include "vulkan/vulkan_raii.hpp"
 
 constexpr uint32_t WIDTH = 800;
@@ -83,6 +82,7 @@ private:
         CreateInstance();
         SetupDebugMessenger();
         PickPhysicalDevice();
+        CreateLogicalDevice();
     }
 
     void InitSDL()
@@ -197,12 +197,10 @@ private:
         vk::DebugUtilsMessageSeverityFlagsEXT severityFlags(
             vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
             vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-            vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo |
-            vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose);
+            vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo);
         vk::DebugUtilsMessageTypeFlagsEXT messageTypeFlags(
             vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-            vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance |
-            vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral);
+            vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance);
 
         vk::DebugUtilsMessengerCreateInfoEXT createInfo{
             .messageSeverity = severityFlags,
@@ -267,11 +265,55 @@ private:
         physicalDevice = *deviceIt;
     }
 
+    void CreateLogicalDevice()
+    {
+        std::vector<vk::QueueFamilyProperties> qfProperties =
+            physicalDevice.getQueueFamilyProperties();
+        auto queueFamilyIt = std::ranges::find_if(
+            qfProperties,
+            [](const auto& qfp)
+            {
+                return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) !=
+                       static_cast<vk::QueueFlags>(0);
+            });
+        auto qfIndex = static_cast<uint32_t>(
+            std::distance(qfProperties.begin(), queueFamilyIt));
+
+        float queuePriority = 0.5f;
+        vk::DeviceQueueCreateInfo queueCreateInfo{.queueFamilyIndex = qfIndex,
+                                                  .queueCount = 1,
+                                                  .pQueuePriorities =
+                                                      &queuePriority};
+
+        vk::PhysicalDeviceFeatures deviceFeatures;
+
+        vk::StructureChain<vk::PhysicalDeviceFeatures2,
+                           vk::PhysicalDeviceVulkan13Features,
+                           vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
+            featureChain = {
+                {}, {.dynamicRendering = true}, {.extendedDynamicState = true}};
+
+        std::vector<const char*> requiredDeviceExtensions = {
+            vk::KHRSwapchainExtensionName};
+
+        vk::DeviceCreateInfo deviceCreateInfo{
+            .pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
+            .queueCreateInfoCount = 1,
+            .pQueueCreateInfos = &queueCreateInfo,
+            .enabledExtensionCount = (uint32_t)requiredDeviceExtensions.size(),
+            .ppEnabledExtensionNames = requiredDeviceExtensions.data()};
+
+        device = vk::raii::Device(physicalDevice, deviceCreateInfo);
+        graphicsQueue = vk::raii::Queue(device, qfIndex, 0);
+    }
+
 private:
-	vk::raii::Context context;
+    vk::raii::Context context;
     vk::raii::Instance instance = nullptr;
     vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
     vk::raii::PhysicalDevice physicalDevice = nullptr;
+    vk::raii::Device device = nullptr;
+    vk::raii::Queue graphicsQueue = nullptr;
 
     SDL_Window* pWindow = nullptr;
 };

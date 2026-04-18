@@ -81,6 +81,7 @@ private:
     {
         CreateInstance();
         SetupDebugMessenger();
+        CreateSurface();
         PickPhysicalDevice();
         CreateLogicalDevice();
     }
@@ -107,6 +108,7 @@ private:
     void Shutdown()
     {
         SDL_DestroyWindow(pWindow);
+        SDL_Vulkan_UnloadLibrary();
         SDL_Quit();
     }
 
@@ -252,6 +254,15 @@ private:
         return false;
     }
 
+    void CreateSurface()
+    {
+        VkSurfaceKHR rawSurface;
+        if (!SDL_Vulkan_CreateSurface(pWindow, *instance, nullptr, &rawSurface))
+            throw SDLException("Failed to create Vulkan surface!");
+
+        surface = vk::raii::SurfaceKHR(instance, rawSurface);
+    }
+
     void PickPhysicalDevice()
     {
         auto devices = instance.enumeratePhysicalDevices();
@@ -269,18 +280,26 @@ private:
     {
         std::vector<vk::QueueFamilyProperties> qfProperties =
             physicalDevice.getQueueFamilyProperties();
-        auto queueFamilyIt = std::ranges::find_if(
-            qfProperties,
-            [](const auto& qfp)
+
+        uint32_t queueIndex = ~0;
+        for (size_t qfpIndex = 0; qfpIndex < qfProperties.size(); qfpIndex++)
+        {
+            if ((qfProperties[qfpIndex].queueFlags &
+                 vk::QueueFlagBits::eGraphics) !=
+                     static_cast<vk::QueueFlags>(0) &&
+                physicalDevice.getSurfaceSupportKHR(qfpIndex, surface))
+
             {
-                return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) !=
-                       static_cast<vk::QueueFlags>(0);
-            });
-        auto qfIndex = static_cast<uint32_t>(
-            std::distance(qfProperties.begin(), queueFamilyIt));
+                queueIndex = static_cast<uint32_t>(qfpIndex);
+                break;
+            }
+        }
+
+		if (queueIndex == ~0)
+			std::runtime_error("Could not find a queue for graphics and presenting!");
 
         float queuePriority = 0.5f;
-        vk::DeviceQueueCreateInfo queueCreateInfo{.queueFamilyIndex = qfIndex,
+        vk::DeviceQueueCreateInfo queueCreateInfo{.queueFamilyIndex = queueIndex,
                                                   .queueCount = 1,
                                                   .pQueuePriorities =
                                                       &queuePriority};
@@ -304,13 +323,14 @@ private:
             .ppEnabledExtensionNames = requiredDeviceExtensions.data()};
 
         device = vk::raii::Device(physicalDevice, deviceCreateInfo);
-        graphicsQueue = vk::raii::Queue(device, qfIndex, 0);
+        graphicsQueue = vk::raii::Queue(device, queueIndex, 0);
     }
 
 private:
     vk::raii::Context context;
     vk::raii::Instance instance = nullptr;
     vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
+    vk::raii::SurfaceKHR surface = nullptr;
     vk::raii::PhysicalDevice physicalDevice = nullptr;
     vk::raii::Device device = nullptr;
     vk::raii::Queue graphicsQueue = nullptr;

@@ -152,6 +152,7 @@ private:
         PickPhysicalDevice();
         CreateLogicalDevice();
         CreateSwapchain();
+        CreateSwapchainImageViews();
     }
 
     void InitSDL()
@@ -425,6 +426,22 @@ private:
         swapImages = swapchain.getImages();
     }
 
+    void CreateSwapchainImageViews()
+    {
+        assert(swapImageViews.empty());
+
+        vk::ImageViewCreateInfo createInfo{
+            .viewType = vk::ImageViewType::e2D,
+            .format = swapchainSurfaceFormat.format,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
+
+        for (const vk::Image& image : swapImages)
+        {
+            createInfo.image = image;
+            swapImageViews.emplace_back(device, createInfo);
+        }
+    }
+
 private:
     vk::raii::Context context;
     vk::raii::Instance instance = nullptr;
@@ -438,6 +455,7 @@ private:
     vk::SurfaceFormatKHR swapchainSurfaceFormat;
     vk::Extent2D swapchainExtent;
     std::vector<vk::Image> swapImages;
+    std::vector<vk::raii::ImageView> swapImageViews;
 
     SDL_Window* pWindow = nullptr;
 };

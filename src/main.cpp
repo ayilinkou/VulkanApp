@@ -1,9 +1,12 @@
 #include <algorithm>
 #include <cstdint>
 #include <format>
+#include <fstream>
+#include <ios>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <vulkan/vulkan.hpp>
 
 #include "SDL3/SDL.h"
@@ -44,6 +47,22 @@ public:
     {
     }
 };
+
+static std::vector<char> ReadFile(const std::string filename)
+{
+    // std::ios::ate starts to read at end of file so that we can get the size
+    // of the buffer
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    if (!file.is_open())
+        std::runtime_error("Failed to open file!");
+
+    std::vector<char> buffer(file.tellg());
+    file.seekg(0, std::ios::beg);
+    file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    file.close();
+
+    return buffer;
+}
 
 // Chooses an ideal swapchain format if available, if not picks the first
 // one.
@@ -153,7 +172,7 @@ private:
         CreateLogicalDevice();
         CreateSwapchain();
         CreateSwapchainImageViews();
-		CreateGraphicsPipeline();
+        CreateGraphicsPipeline();
     }
 
     void InitSDL()
@@ -378,10 +397,13 @@ private:
         vk::PhysicalDeviceFeatures deviceFeatures;
 
         vk::StructureChain<vk::PhysicalDeviceFeatures2,
+                           vk::PhysicalDeviceVulkan11Features,
                            vk::PhysicalDeviceVulkan13Features,
                            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
-            featureChain = {
-                {}, {.dynamicRendering = true}, {.extendedDynamicState = true}};
+            featureChain = {{},
+                            {.shaderDrawParameters = true},
+                            {.dynamicRendering = true},
+                            {.extendedDynamicState = true}};
 
         std::vector<const char*> requiredDeviceExtensions = {
             vk::KHRSwapchainExtensionName};
@@ -443,10 +465,35 @@ private:
         }
     }
 
-	void CreateGraphicsPipeline()
-	{
+    void CreateGraphicsPipeline()
+    {
+        vk::raii::ShaderModule shaderModule =
+            CreateShaderModule(ReadFile("shaders/slang.spv"));
 
-	}
+        vk::PipelineShaderStageCreateInfo vertCreateInfo{
+            .stage = vk::ShaderStageFlagBits::eVertex,
+            .module = shaderModule,
+            .pName = "vertMain"};
+
+        vk::PipelineShaderStageCreateInfo fragCreateInfo{
+            .stage = vk::ShaderStageFlagBits::eFragment,
+            .module = shaderModule,
+            .pName = "fragMain"};
+
+        vk::PipelineShaderStageCreateInfo shaderStages[] = {vertCreateInfo,
+                                                            fragCreateInfo};
+    }
+
+    [[nodiscard]] vk::raii::ShaderModule
+    CreateShaderModule(const std::vector<char>& shaderCode) const
+    {
+        vk::ShaderModuleCreateInfo createInfo{
+            .codeSize = shaderCode.size() * sizeof(char),
+            .pCode = reinterpret_cast<const uint32_t*>(shaderCode.data())};
+        vk::raii::ShaderModule shaderModule(device, createInfo);
+
+        return shaderModule;
+    }
 
 private:
     vk::raii::Context context;

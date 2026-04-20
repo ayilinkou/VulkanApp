@@ -153,6 +153,7 @@ private:
         CreateLogicalDevice();
         CreateSwapchain();
         CreateSwapchainImageViews();
+		CreateGraphicsPipeline();
     }
 
     void InitSDL()
@@ -441,6 +442,11 @@ private:
             swapImageViews.emplace_back(device, createInfo);
         }
     }
+
+	void CreateGraphicsPipeline()
+	{
+
+	}
 
 private:
     vk::raii::Context context;

@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vulkan/vulkan.hpp>
 
@@ -9,6 +10,7 @@
 #include "SDL3/SDL_video.h"
 #include "SDL3/SDL_vulkan.h"
 
+#include "vulkan/vulkan.hpp"
 #include "vulkan/vulkan_raii.hpp"
 
 constexpr uint32_t WIDTH = 800;
@@ -42,6 +44,71 @@ public:
     {
     }
 };
+
+// Chooses an ideal swapchain format if available, if not picks the first
+// one.
+vk::SurfaceFormatKHR
+ChooseSwapchainFormat(const std::vector<vk::SurfaceFormatKHR>& formats)
+{
+    if (formats.empty())
+        throw std::runtime_error("No surface formats available!");
+
+    const auto formatIt = std::ranges::find_if(
+        formats,
+        [](const auto& format)
+        {
+            return format.format == vk::Format::eB8G8R8A8Srgb &&
+                   format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
+        });
+
+    return formatIt != formats.end() ? *formatIt : formats[0];
+}
+
+// Chooses mailbox presentation mode if available. Falls back to FIFO.
+vk::PresentModeKHR
+ChoosePresentMode(const std::vector<vk::PresentModeKHR>& modes)
+{
+    if (modes.empty())
+        throw std::runtime_error("No swapchain presentation modes available!");
+
+    const auto modeIt =
+        std::ranges::find_if(modes, [](const auto& mode)
+                             { return mode == vk::PresentModeKHR::eMailbox; });
+    return modeIt != modes.end() ? *modeIt : vk::PresentModeKHR::eFifo;
+}
+
+vk::Extent2D
+ChooseSwapchainExtent(const vk::SurfaceCapabilitiesKHR& capabilities,
+                      SDL_Window* window)
+{
+    // Some window managers allow resolutions which don't match the window. They
+    // symbol this with max value of a uint32_t.
+    if (capabilities.currentExtent.width !=
+        std::numeric_limits<uint32_t>::max())
+        return capabilities.currentExtent;
+
+    // This has to be used rather than the raw window width and height as high
+    // DPI displays might not match screen coordinates and pixels.
+    int width, height;
+    SDL_GetWindowSizeInPixels(window, &width, &height);
+
+    return {std::clamp<uint32_t>(width, capabilities.minImageExtent.width,
+                                 capabilities.maxImageExtent.width),
+            std::clamp<uint32_t>(height, capabilities.minImageExtent.height,
+                                 capabilities.maxImageExtent.height)};
+}
+
+// Tries to get at least 3 images.
+uint32_t ChooseSwapMinImageCount(const vk::SurfaceCapabilitiesKHR& capabilities)
+{
+    uint32_t minCount = std::max(3u, capabilities.minImageCount);
+
+    // maxImageCount == 0 indicates that there is no maximum
+    if ((0 < capabilities.maxImageCount) &&
+        (capabilities.maxImageCount < minCount))
+        minCount = capabilities.maxImageCount;
+    return minCount;
+}
 
 class App
 {
@@ -84,6 +151,7 @@ private:
         CreateSurface();
         PickPhysicalDevice();
         CreateLogicalDevice();
+        CreateSwapchain();
     }
 
     void InitSDL()
@@ -286,7 +354,7 @@ private:
         {
             if ((qfProperties[qfpIndex].queueFlags &
                  vk::QueueFlagBits::eGraphics) !=
-                     static_cast<vk::QueueFlags>(0) &&
+                    static_cast<vk::QueueFlags>(0) &&
                 physicalDevice.getSurfaceSupportKHR(qfpIndex, surface))
 
             {
@@ -295,14 +363,15 @@ private:
             }
         }
 
-		if (queueIndex == ~0)
-			std::runtime_error("Could not find a queue for graphics and presenting!");
+        if (queueIndex == ~0)
+            std::runtime_error(
+                "Could not find a queue for graphics and presenting!");
 
         float queuePriority = 0.5f;
-        vk::DeviceQueueCreateInfo queueCreateInfo{.queueFamilyIndex = queueIndex,
-                                                  .queueCount = 1,
-                                                  .pQueuePriorities =
-                                                      &queuePriority};
+        vk::DeviceQueueCreateInfo queueCreateInfo{
+            .queueFamilyIndex = queueIndex,
+            .queueCount = 1,
+            .pQueuePriorities = &queuePriority};
 
         vk::PhysicalDeviceFeatures deviceFeatures;
 
@@ -326,6 +395,36 @@ private:
         graphicsQueue = vk::raii::Queue(device, queueIndex, 0);
     }
 
+    void CreateSwapchain()
+    {
+        vk::SurfaceCapabilitiesKHR capabilities =
+            physicalDevice.getSurfaceCapabilitiesKHR(*surface);
+        const std::vector<vk::SurfaceFormatKHR> formats =
+            physicalDevice.getSurfaceFormatsKHR(*surface);
+        swapchainSurfaceFormat = ChooseSwapchainFormat(formats);
+        const std::vector<vk::PresentModeKHR> presentModes =
+            physicalDevice.getSurfacePresentModesKHR(*surface);
+        swapchainExtent = ChooseSwapchainExtent(capabilities, pWindow);
+
+        vk::SwapchainCreateInfoKHR createInfo{
+            .surface = *surface,
+            .minImageCount = ChooseSwapMinImageCount(capabilities),
+            .imageFormat = swapchainSurfaceFormat.format,
+            .imageColorSpace = swapchainSurfaceFormat.colorSpace,
+            .imageExtent = swapchainExtent,
+            .imageArrayLayers = 1,
+            .imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
+            .imageSharingMode = vk::SharingMode::eExclusive,
+            .preTransform = capabilities.currentTransform,
+            .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+            .presentMode = ChoosePresentMode(presentModes),
+            .clipped = true,
+            .oldSwapchain = nullptr};
+
+        swapchain = vk::raii::SwapchainKHR(device, createInfo);
+        swapImages = swapchain.getImages();
+    }
+
 private:
     vk::raii::Context context;
     vk::raii::Instance instance = nullptr;
@@ -334,6 +433,11 @@ private:
     vk::raii::PhysicalDevice physicalDevice = nullptr;
     vk::raii::Device device = nullptr;
     vk::raii::Queue graphicsQueue = nullptr;
+    vk::raii::SwapchainKHR swapchain = nullptr;
+
+    vk::SurfaceFormatKHR swapchainSurfaceFormat;
+    vk::Extent2D swapchainExtent;
+    std::vector<vk::Image> swapImages;
 
     SDL_Window* pWindow = nullptr;
 };

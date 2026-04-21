@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <atomic>
+#include <csignal>
 #include <cstdint>
 #include <format>
 #include <fstream>
@@ -6,8 +8,6 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
-#include <string_view>
-#include <vulkan/vulkan.hpp>
 
 #include "SDL3/SDL.h"
 #include "SDL3/SDL_video.h"
@@ -18,6 +18,13 @@
 
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
+
+std::atomic<bool> gbShouldClose = false;
+
+void HandleSIGINT(int)
+{
+    gbShouldClose = true;
+}
 
 std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -47,6 +54,38 @@ public:
     {
     }
 };
+
+void InitSDL()
+{
+    if (!SDL_Init(SDL_INIT_VIDEO))
+        throw SDLException("Failed to initialise SDL!");
+
+    std::cout << "SDL video driver: " << SDL_GetCurrentVideoDriver() << "\n";
+
+    if (!SDL_Vulkan_LoadLibrary(nullptr))
+        throw SDLException("Failed to load Vulkan library!");
+}
+
+SDL_Window* CreateSDLWindow()
+{
+    // hidden to hide the window while initialisation is taking place
+    SDL_WindowFlags flags =
+        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
+    SDL_Window* window = SDL_CreateWindow("Vulkan App", 640, 480, flags);
+    if (window == nullptr)
+        throw SDLException("Failed to create window!");
+
+    return window;
+}
+
+void ShutdownSDL(SDL_Window* pWindow)
+{
+    if (pWindow)
+        SDL_DestroyWindow(pWindow);
+
+    SDL_Vulkan_UnloadLibrary();
+    SDL_Quit();
+}
 
 static std::vector<char> ReadFile(const std::string filename)
 {
@@ -133,6 +172,7 @@ class App
 {
 public:
     App() {}
+    App(SDL_Window* pWindow) : pWindow(pWindow) {}
     ~App() {}
 
     void Run()
@@ -141,14 +181,13 @@ public:
 
         SDL_ShowWindow(pWindow);
 
-        bool bDone = false;
-        while (!bDone)
+        while (!gbShouldClose)
         {
             SDL_Event event;
             while (SDL_PollEvent(&event))
             {
                 if (event.type == SDL_EVENT_QUIT)
-                    bDone = true;
+                    gbShouldClose = true;
             }
         }
 
@@ -158,9 +197,8 @@ public:
 private:
     void Init()
     {
-        InitSDL();
         InitVulkan();
-        std::cout << "Init() succeeded!\n";
+        std::cout << "Init() succeeded.\n";
     }
 
     void InitVulkan()
@@ -175,31 +213,7 @@ private:
         CreateGraphicsPipeline();
     }
 
-    void InitSDL()
-    {
-        if (!SDL_Init(SDL_INIT_VIDEO))
-            throw SDLException("Failed to initialise SDL!");
-
-        std::cout << "SDL video driver: " << SDL_GetCurrentVideoDriver()
-                  << "\n";
-
-        if (!SDL_Vulkan_LoadLibrary(nullptr))
-            throw SDLException("Failed to load Vulkan library!");
-
-        // hidden to hide the window while initialisation is taking place
-        SDL_WindowFlags flags =
-            SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
-        pWindow = SDL_CreateWindow("Vulkan App", 640, 480, flags);
-        if (pWindow == nullptr)
-            throw SDLException("Failed to create window!");
-    }
-
-    void Shutdown()
-    {
-        SDL_DestroyWindow(pWindow);
-        SDL_Vulkan_UnloadLibrary();
-        SDL_Quit();
-    }
+    void Shutdown() {}
 
     void CreateInstance()
     {
@@ -480,8 +494,8 @@ private:
             .module = shaderModule,
             .pName = "fragMain"};
 
-        vk::PipelineShaderStageCreateInfo shaderStages[] = {vertCreateInfo,
-                                                            fragCreateInfo};
+        std::vector<vk::PipelineShaderStageCreateInfo> shaderStages = {
+            vertCreateInfo, fragCreateInfo};
 
         vk::PipelineVertexInputStateCreateInfo vertexInput{};
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
@@ -532,6 +546,27 @@ private:
         vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
             .setLayoutCount = 0, .pushConstantRangeCount = 0};
         pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
+
+        vk::StructureChain<vk::GraphicsPipelineCreateInfo,
+                           vk::PipelineRenderingCreateInfo>
+            pipelineCreateInfoChain = {
+                {.stageCount = static_cast<uint32_t>(shaderStages.size()),
+                 .pStages = shaderStages.data(),
+                 .pVertexInputState = &vertexInput,
+                 .pInputAssemblyState = &inputAssembly,
+                 .pViewportState = &viewportState,
+                 .pRasterizationState = &rasterState,
+                 .pMultisampleState = &multisampleState,
+                 .pColorBlendState = &blendState,
+                 .pDynamicState = &dynamicState,
+                 .layout = pipelineLayout,
+                 .renderPass = nullptr},
+                {.colorAttachmentCount = 1,
+                 .pColorAttachmentFormats = &swapchainSurfaceFormat.format}};
+
+        graphicsPipeline = vk::raii::Pipeline(
+            device, nullptr,
+            pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
     }
 
     [[nodiscard]] vk::raii::ShaderModule
@@ -555,6 +590,7 @@ private:
     vk::raii::Queue graphicsQueue = nullptr;
     vk::raii::SwapchainKHR swapchain = nullptr;
     vk::raii::PipelineLayout pipelineLayout = nullptr;
+    vk::raii::Pipeline graphicsPipeline = nullptr;
 
     vk::SurfaceFormatKHR swapchainSurfaceFormat;
     vk::Extent2D swapchainExtent;
@@ -566,9 +602,16 @@ private:
 
 int main()
 {
+    std::signal(SIGINT, HandleSIGINT);
+
+    SDL_Window* pWindow = nullptr;
+
     try
     {
-        App app;
+        InitSDL();
+        pWindow = CreateSDLWindow();
+
+        App app(pWindow);
         app.Run();
     }
     catch (const SDLException& e)
@@ -589,5 +632,8 @@ int main()
         return EXIT_FAILURE;
     }
 
+    ShutdownSDL(pWindow);
+
+    std::cout << "Exiting gracefully..." << std::endl;
     return EXIT_SUCCESS;
 }

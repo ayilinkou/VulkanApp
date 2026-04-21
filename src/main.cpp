@@ -482,6 +482,56 @@ private:
 
         vk::PipelineShaderStageCreateInfo shaderStages[] = {vertCreateInfo,
                                                             fragCreateInfo};
+
+        vk::PipelineVertexInputStateCreateInfo vertexInput{};
+        vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
+            .topology = vk::PrimitiveTopology::eTriangleList};
+
+        vk::Viewport viewport{
+            .x = 0.f,
+            .y = 0.f,
+            .width = static_cast<float>(swapchainExtent.width),
+            .height = static_cast<float>(swapchainExtent.height),
+            .minDepth = 0.f,
+            .maxDepth = 1.f};
+        vk::Rect2D scissor{.offset = vk::Offset2D{0, 0},
+                           .extent = swapchainExtent};
+        std::vector<vk::DynamicState> dynamicStates = {
+            vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+        vk::PipelineDynamicStateCreateInfo dynamicState{
+            .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+            .pDynamicStates = dynamicStates.data()};
+        vk::PipelineViewportStateCreateInfo viewportState{.viewportCount = 1,
+                                                          .scissorCount = 1};
+
+        vk::PipelineRasterizationStateCreateInfo rasterState{
+            .depthClampEnable = vk::False,
+            .rasterizerDiscardEnable = vk::False,
+            .polygonMode = vk::PolygonMode::eFill,
+            .cullMode = vk::CullModeFlagBits::eBack,
+            .frontFace = vk::FrontFace::eClockwise,
+            .depthBiasEnable = vk::False,
+            .lineWidth = 1.f};
+
+        vk::PipelineMultisampleStateCreateInfo multisampleState{
+            .rasterizationSamples = vk::SampleCountFlagBits::e1,
+            .sampleShadingEnable = vk::False};
+
+        vk::PipelineColorBlendAttachmentState attachmentState{
+            .blendEnable = vk::False,
+            .colorWriteMask = vk::ColorComponentFlagBits::eR |
+                              vk::ColorComponentFlagBits::eG |
+                              vk::ColorComponentFlagBits::eB |
+                              vk::ColorComponentFlagBits::eA};
+        vk::PipelineColorBlendStateCreateInfo blendState{
+            .logicOpEnable = vk::False,
+            .logicOp = vk::LogicOp::eCopy,
+            .attachmentCount = 1,
+            .pAttachments = &attachmentState};
+
+        vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
+            .setLayoutCount = 0, .pushConstantRangeCount = 0};
+        pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
     }
 
     [[nodiscard]] vk::raii::ShaderModule
@@ -504,6 +554,7 @@ private:
     vk::raii::Device device = nullptr;
     vk::raii::Queue graphicsQueue = nullptr;
     vk::raii::SwapchainKHR swapchain = nullptr;
+    vk::raii::PipelineLayout pipelineLayout = nullptr;
 
     vk::SurfaceFormatKHR swapchainSurfaceFormat;
     vk::Extent2D swapchainExtent;

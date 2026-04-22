@@ -21,10 +21,7 @@ constexpr uint32_t HEIGHT = 600;
 
 std::atomic<bool> gbShouldClose = false;
 
-void HandleSIGINT(int)
-{
-    gbShouldClose = true;
-}
+void HandleSIGINT(int) { gbShouldClose = true; std::cout << "\n"; }
 
 std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -211,6 +208,7 @@ private:
         CreateSwapchain();
         CreateSwapchainImageViews();
         CreateGraphicsPipeline();
+        CreateCommandPool();
     }
 
     void Shutdown() {}
@@ -384,7 +382,6 @@ private:
         std::vector<vk::QueueFamilyProperties> qfProperties =
             physicalDevice.getQueueFamilyProperties();
 
-        uint32_t queueIndex = ~0;
         for (size_t qfpIndex = 0; qfpIndex < qfProperties.size(); qfpIndex++)
         {
             if ((qfProperties[qfpIndex].queueFlags &
@@ -479,6 +476,17 @@ private:
         }
     }
 
+    [[nodiscard]] vk::raii::ShaderModule
+    CreateShaderModule(const std::vector<char>& shaderCode) const
+    {
+        vk::ShaderModuleCreateInfo createInfo{
+            .codeSize = shaderCode.size() * sizeof(char),
+            .pCode = reinterpret_cast<const uint32_t*>(shaderCode.data())};
+        vk::raii::ShaderModule shaderModule(device, createInfo);
+
+        return shaderModule;
+    }
+
     void CreateGraphicsPipeline()
     {
         vk::raii::ShaderModule shaderModule =
@@ -569,15 +577,13 @@ private:
             pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
     }
 
-    [[nodiscard]] vk::raii::ShaderModule
-    CreateShaderModule(const std::vector<char>& shaderCode) const
+    void CreateCommandPool()
     {
-        vk::ShaderModuleCreateInfo createInfo{
-            .codeSize = shaderCode.size() * sizeof(char),
-            .pCode = reinterpret_cast<const uint32_t*>(shaderCode.data())};
-        vk::raii::ShaderModule shaderModule(device, createInfo);
+        vk::CommandPoolCreateInfo createInfo{
+            .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+            .queueFamilyIndex = queueIndex};
 
-        return shaderModule;
+        commandPool = vk::raii::CommandPool(device, createInfo);
     }
 
 private:
@@ -591,13 +597,15 @@ private:
     vk::raii::SwapchainKHR swapchain = nullptr;
     vk::raii::PipelineLayout pipelineLayout = nullptr;
     vk::raii::Pipeline graphicsPipeline = nullptr;
+    vk::raii::CommandPool commandPool = nullptr;
 
     vk::SurfaceFormatKHR swapchainSurfaceFormat;
     vk::Extent2D swapchainExtent;
     std::vector<vk::Image> swapImages;
     std::vector<vk::raii::ImageView> swapImageViews;
-
-    SDL_Window* pWindow = nullptr;
+	uint32_t queueIndex = ~0;
+    
+	SDL_Window* pWindow = nullptr;
 };
 
 int main()

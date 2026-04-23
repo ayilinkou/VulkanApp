@@ -191,6 +191,8 @@ public:
                 if (event.type == SDL_EVENT_QUIT)
                     gbShouldClose = true;
             }
+
+            DrawFrame();
         }
 
         Shutdown();
@@ -215,9 +217,21 @@ private:
         CreateGraphicsPipeline();
         CreateCommandPool();
         CreateCommandBuffer();
+        CreateSyncObjects();
     }
 
     void Shutdown() {}
+
+    void DrawFrame()
+    {
+        // Semaphores coordinate GPU to GPU synchronisation, for example
+        // ordering work between queues. They get reset automatically after the
+        // waiting operation begins.
+        //
+        // Fences coordinate CPU to GPU synchronisation, for times when
+        // the CPU needs to know that the GPU has finished a task. Must be
+        // explicitely reset by the host.
+    }
 
     void CreateInstance()
     {
@@ -651,7 +665,7 @@ private:
             vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             vk::PipelineStageFlagBits2::eBottomOfPipe);
 
-		m_CommandBuffer.end();
+        m_CommandBuffer.end();
     }
 
     void TransitionImageLayout(uint32_t imageIndex, vk::ImageLayout oldLayout,
@@ -683,6 +697,16 @@ private:
         m_CommandBuffer.pipelineBarrier2(info);
     }
 
+    void CreateSyncObjects()
+    {
+        m_PresentCompleteSemaphore =
+            vk::raii::Semaphore(m_Device, vk::SemaphoreCreateInfo());
+        m_RenderCompleteSemaphore =
+            vk::raii::Semaphore(m_Device, vk::SemaphoreCreateInfo());
+        m_DrawFence = vk::raii::Fence(
+            m_Device, {.flags = vk::FenceCreateFlagBits::eSignaled});
+    }
+
 private:
     vk::raii::Context m_Context;
     vk::raii::Instance m_Instance = nullptr;
@@ -702,6 +726,10 @@ private:
     std::vector<vk::Image> m_SwapImages;
     std::vector<vk::raii::ImageView> m_SwapImageViews;
     uint32_t m_QueueIndex = ~0;
+
+    vk::raii::Semaphore m_PresentCompleteSemaphore = nullptr;
+    vk::raii::Semaphore m_RenderCompleteSemaphore = nullptr;
+    vk::raii::Fence m_DrawFence = nullptr;
 
     SDL_Window* m_pWindow = nullptr;
 };

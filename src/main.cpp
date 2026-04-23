@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <vulkan/vulkan_core.h>
 
 #include "SDL3/SDL.h"
 #include "SDL3/SDL_video.h"
@@ -21,7 +22,11 @@ constexpr uint32_t HEIGHT = 600;
 
 std::atomic<bool> gbShouldClose = false;
 
-void HandleSIGINT(int) { gbShouldClose = true; std::cout << "\n"; }
+void HandleSIGINT(int)
+{
+    gbShouldClose = true;
+    std::cout << "\n";
+}
 
 std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -209,6 +214,7 @@ private:
         CreateSwapchainImageViews();
         CreateGraphicsPipeline();
         CreateCommandPool();
+        CreateCommandBuffer();
     }
 
     void Shutdown() {}
@@ -358,7 +364,8 @@ private:
     void CreateSurface()
     {
         VkSurfaceKHR rawSurface;
-        if (!SDL_Vulkan_CreateSurface(m_pWindow, *m_Instance, nullptr, &rawSurface))
+        if (!SDL_Vulkan_CreateSurface(m_pWindow, *m_Instance, nullptr,
+                                      &rawSurface))
             throw SDLException("Failed to create Vulkan surface!");
 
         m_Surface = vk::raii::SurfaceKHR(m_Instance, rawSurface);
@@ -553,7 +560,8 @@ private:
 
         vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
             .setLayoutCount = 0, .pushConstantRangeCount = 0};
-        m_PipelineLayout = vk::raii::PipelineLayout(m_Device, pipelineLayoutInfo);
+        m_PipelineLayout =
+            vk::raii::PipelineLayout(m_Device, pipelineLayoutInfo);
 
         vk::StructureChain<vk::GraphicsPipelineCreateInfo,
                            vk::PipelineRenderingCreateInfo>
@@ -582,8 +590,97 @@ private:
         vk::CommandPoolCreateInfo createInfo{
             .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
             .queueFamilyIndex = m_QueueIndex};
-
         m_CommandPool = vk::raii::CommandPool(m_Device, createInfo);
+    }
+
+    void CreateCommandBuffer()
+    {
+        vk::CommandBufferAllocateInfo allocInfo{
+            .commandPool = m_CommandPool,
+            .level = vk::CommandBufferLevel::ePrimary,
+            .commandBufferCount = 1};
+        m_CommandBuffer =
+            std::move(vk::raii::CommandBuffers(m_Device, allocInfo).front());
+    }
+
+    void RecordCommandBuffer(uint32_t imageIndex)
+    {
+        vk::CommandBufferBeginInfo beginInfo{};
+        m_CommandBuffer.begin(beginInfo);
+
+        TransitionImageLayout(
+            imageIndex, vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eColorAttachmentOptimal, {},
+            vk::AccessFlagBits2::eColorAttachmentWrite,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput);
+
+        vk::ClearValue clearColor = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
+        vk::RenderingAttachmentInfo attachmentInfo = {
+            .imageView = m_SwapImageViews[imageIndex],
+            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .loadOp = vk::AttachmentLoadOp::eClear,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+            .clearValue = clearColor};
+
+        vk::RenderingInfo renderingInfo = {
+            .renderArea = {.offset = {0, 0}, .extent = m_SwapchainExtent},
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &attachmentInfo};
+
+        m_CommandBuffer.beginRendering(renderingInfo);
+
+        m_CommandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                                     *m_GraphicsPipeline);
+        m_CommandBuffer.setViewport(
+            0, vk::Viewport(
+                   0.f, 0.f, static_cast<float>(m_SwapchainExtent.width),
+                   static_cast<float>(m_SwapchainExtent.height), 0.f, 1.f));
+        m_CommandBuffer.setScissor(
+            0, vk::Rect2D(vk::Offset2D(0, 0), m_SwapchainExtent));
+
+        m_CommandBuffer.draw(3, 1, 0, 0);
+
+        m_CommandBuffer.endRendering();
+
+        TransitionImageLayout(
+            imageIndex, vk::ImageLayout::eColorAttachmentOptimal,
+            vk::ImageLayout::ePresentSrcKHR,
+            vk::AccessFlagBits2::eColorAttachmentWrite, {},
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits2::eBottomOfPipe);
+
+		m_CommandBuffer.end();
+    }
+
+    void TransitionImageLayout(uint32_t imageIndex, vk::ImageLayout oldLayout,
+                               vk::ImageLayout newLayout,
+                               vk::AccessFlags2 srcAccessMask,
+                               vk::AccessFlags2 dstAccessFlags,
+                               vk::PipelineStageFlags2 srcStageMask,
+                               vk::PipelineStageFlags2 dstStageMask)
+    {
+        vk::ImageMemoryBarrier2 barrier = {
+            .srcStageMask = srcStageMask,
+            .srcAccessMask = srcAccessMask,
+            .dstStageMask = dstStageMask,
+            .dstAccessMask = dstAccessFlags,
+            .oldLayout = oldLayout,
+            .newLayout = newLayout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_SwapImages[imageIndex],
+            .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor,
+                                 .baseMipLevel = 0,
+                                 .levelCount = 1,
+                                 .baseArrayLayer = 0,
+                                 .layerCount = 1}};
+
+        vk::DependencyInfo info = {.dependencyFlags = {},
+                                   .imageMemoryBarrierCount = 1,
+                                   .pImageMemoryBarriers = &barrier};
+        m_CommandBuffer.pipelineBarrier2(info);
     }
 
 private:
@@ -598,14 +695,15 @@ private:
     vk::raii::PipelineLayout m_PipelineLayout = nullptr;
     vk::raii::Pipeline m_GraphicsPipeline = nullptr;
     vk::raii::CommandPool m_CommandPool = nullptr;
+    vk::raii::CommandBuffer m_CommandBuffer = nullptr;
 
     vk::SurfaceFormatKHR m_SwapchainSurfaceFormat;
     vk::Extent2D m_SwapchainExtent;
     std::vector<vk::Image> m_SwapImages;
     std::vector<vk::raii::ImageView> m_SwapImageViews;
-	uint32_t m_QueueIndex = ~0;
-    
-	SDL_Window* m_pWindow = nullptr;
+    uint32_t m_QueueIndex = ~0;
+
+    SDL_Window* m_pWindow = nullptr;
 };
 
 int main()

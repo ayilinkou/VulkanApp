@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <format>
@@ -8,17 +9,20 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <thread>
 #include <vulkan/vulkan_core.h>
 
 #include "SDL3/SDL.h"
+#include "SDL3/SDL_events.h"
+#include "SDL3/SDL_oldnames.h"
 #include "SDL3/SDL_video.h"
 #include "SDL3/SDL_vulkan.h"
 
 #include "vulkan/vulkan.hpp"
 #include "vulkan/vulkan_raii.hpp"
 
-constexpr uint32_t WIDTH = 800;
-constexpr uint32_t HEIGHT = 600;
+constexpr uint32_t WIDTH = 1920;
+constexpr uint32_t HEIGHT = 1080;
 
 std::atomic<bool> gbShouldClose = false;
 
@@ -71,11 +75,13 @@ void InitSDL()
 SDL_Window* CreateSDLWindow()
 {
     // hidden to hide the window while initialisation is taking place
-    SDL_WindowFlags flags =
-        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
-    SDL_Window* window = SDL_CreateWindow("Vulkan App", 640, 480, flags);
+    SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
+                            SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS;
+    SDL_Window* window = SDL_CreateWindow("Vulkan App", WIDTH, HEIGHT, flags);
     if (window == nullptr)
         throw SDLException("Failed to create window!");
+
+    SDL_SetWindowFullscreen(window, true);
 
     return window;
 }
@@ -147,6 +153,9 @@ ChooseSwapchainExtent(const vk::SurfaceCapabilitiesKHR& capabilities,
         std::numeric_limits<uint32_t>::max())
         return capabilities.currentExtent;
 
+    std::cout << "Window manager allows resolutions that don't match the "
+                 "window. This is not an error.\n";
+
     // This has to be used rather than the raw window width and height as high
     // DPI displays might not match screen coordinates and pixels.
     int width, height;
@@ -185,16 +194,31 @@ public:
 
         while (!gbShouldClose)
         {
-            SDL_Event event;
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+			SDL_Event event;
             while (SDL_PollEvent(&event))
             {
-                if (event.type == SDL_EVENT_QUIT)
+                switch (event.type)
+                {
+                case SDL_EVENT_QUIT:
                     gbShouldClose = true;
+                    break;
+                case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                    m_bIsFocused = true;
+					std::cout << "Focus gained.\n";
+                    break;
+                case SDL_EVENT_WINDOW_FOCUS_LOST:
+                    m_bIsFocused = false;
+					std::cout << "Focus lost.\n";
+                    break;
+                }
             }
 
             DrawFrame();
         }
 
+		m_Device.waitIdle();
         Shutdown();
     }
 
@@ -231,6 +255,44 @@ private:
         // Fences coordinate CPU to GPU synchronisation, for times when
         // the CPU needs to know that the GPU has finished a task. Must be
         // explicitely reset by the host.
+
+        auto fenceResult =
+            m_Device.waitForFences(*m_DrawFence, vk::True, UINT64_MAX);
+        if (fenceResult != vk::Result::eSuccess)
+            throw std::runtime_error("Failed to wait for fence!");
+
+        m_Device.resetFences(*m_DrawFence);
+
+        auto [result, imageIndex] = m_Swapchain.acquireNextImage(
+            UINT64_MAX, *m_PresentCompleteSemaphore, nullptr);
+        if (result != vk::Result::eSuccess)
+            throw std::runtime_error("Failed to acquire next swapchain image!");
+
+        RecordCommandBuffer(imageIndex);
+
+        vk::PipelineStageFlags waitDestinationStageFlags(
+            vk::PipelineStageFlagBits::eColorAttachmentOutput);
+        const vk::SubmitInfo submitInfo{
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &*m_PresentCompleteSemaphore,
+            .pWaitDstStageMask = &waitDestinationStageFlags,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &*m_CommandBuffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &*m_RenderCompleteSemaphore};
+
+        m_GraphicsQueue.submit(submitInfo, *m_DrawFence);
+
+        const vk::PresentInfoKHR presentInfo{.waitSemaphoreCount = 1,
+                                             .pWaitSemaphores =
+                                                 &*m_RenderCompleteSemaphore,
+                                             .swapchainCount = 1,
+                                             .pSwapchains = &*m_Swapchain,
+                                             .pImageIndices = &imageIndex};
+
+        result = m_GraphicsQueue.presentKHR(presentInfo);
+        if (result != vk::Result::eSuccess)
+            throw std::runtime_error("Failed to present image!");
     }
 
     void CreateInstance()
@@ -366,6 +428,8 @@ private:
         bool bSupportsAllFeatures =
             features.get<vk::PhysicalDeviceVulkan13Features>()
                 .dynamicRendering &&
+            features.get<vk::PhysicalDeviceVulkan13Features>()
+                .synchronization2 &&
             features.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>()
                 .extendedDynamicState;
 
@@ -432,10 +496,11 @@ private:
                            vk::PhysicalDeviceVulkan11Features,
                            vk::PhysicalDeviceVulkan13Features,
                            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
-            featureChain = {{},
-                            {.shaderDrawParameters = true},
-                            {.dynamicRendering = true},
-                            {.extendedDynamicState = true}};
+            featureChain = {
+                {},
+                {.shaderDrawParameters = true},
+                {.synchronization2 = true, .dynamicRendering = true},
+                {.extendedDynamicState = true}};
 
         std::vector<const char*> requiredDeviceExtensions = {
             vk::KHRSwapchainExtensionName};
@@ -461,6 +526,9 @@ private:
         const std::vector<vk::PresentModeKHR> presentModes =
             m_PhysicalDevice.getSurfacePresentModesKHR(*m_Surface);
         m_SwapchainExtent = ChooseSwapchainExtent(capabilities, m_pWindow);
+
+        std::cout << "Swapchain Extent: " << m_SwapchainExtent.width << "x"
+                  << m_SwapchainExtent.height << "\n";
 
         vk::SwapchainCreateInfoKHR createInfo{
             .surface = *m_Surface,
@@ -732,6 +800,7 @@ private:
     vk::raii::Fence m_DrawFence = nullptr;
 
     SDL_Window* m_pWindow = nullptr;
+    bool m_bIsFocused = true;
 };
 
 int main()

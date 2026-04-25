@@ -14,7 +14,6 @@
 
 #include "SDL3/SDL.h"
 #include "SDL3/SDL_events.h"
-#include "SDL3/SDL_oldnames.h"
 #include "SDL3/SDL_video.h"
 #include "SDL3/SDL_vulkan.h"
 
@@ -23,6 +22,7 @@
 
 constexpr uint32_t WIDTH = 1920;
 constexpr uint32_t HEIGHT = 1080;
+constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 std::atomic<bool> gbShouldClose = false;
 
@@ -194,9 +194,9 @@ public:
 
         while (!gbShouldClose)
         {
-			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-			SDL_Event event;
+            SDL_Event event;
             while (SDL_PollEvent(&event))
             {
                 switch (event.type)
@@ -206,11 +206,11 @@ public:
                     break;
                 case SDL_EVENT_WINDOW_FOCUS_GAINED:
                     m_bIsFocused = true;
-					std::cout << "Focus gained.\n";
+                    std::cout << "Focus gained.\n";
                     break;
                 case SDL_EVENT_WINDOW_FOCUS_LOST:
                     m_bIsFocused = false;
-					std::cout << "Focus lost.\n";
+                    std::cout << "Focus lost.\n";
                     break;
                 }
             }
@@ -218,7 +218,7 @@ public:
             DrawFrame();
         }
 
-		m_Device.waitIdle();
+        m_Device.waitIdle();
         Shutdown();
     }
 
@@ -256,15 +256,15 @@ private:
         // the CPU needs to know that the GPU has finished a task. Must be
         // explicitely reset by the host.
 
-        auto fenceResult =
-            m_Device.waitForFences(*m_DrawFence, vk::True, UINT64_MAX);
+        auto fenceResult = m_Device.waitForFences(*m_DrawFences[m_FrameIndex],
+                                                  vk::True, UINT64_MAX);
         if (fenceResult != vk::Result::eSuccess)
             throw std::runtime_error("Failed to wait for fence!");
 
-        m_Device.resetFences(*m_DrawFence);
+        m_Device.resetFences(*m_DrawFences[m_FrameIndex]);
 
         auto [result, imageIndex] = m_Swapchain.acquireNextImage(
-            UINT64_MAX, *m_PresentCompleteSemaphore, nullptr);
+            UINT64_MAX, *m_PresentCompleteSemaphores[m_FrameIndex], nullptr);
         if (result != vk::Result::eSuccess)
             throw std::runtime_error("Failed to acquire next swapchain image!");
 
@@ -274,25 +274,27 @@ private:
             vk::PipelineStageFlagBits::eColorAttachmentOutput);
         const vk::SubmitInfo submitInfo{
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &*m_PresentCompleteSemaphore,
+            .pWaitSemaphores = &*m_PresentCompleteSemaphores[m_FrameIndex],
             .pWaitDstStageMask = &waitDestinationStageFlags,
             .commandBufferCount = 1,
-            .pCommandBuffers = &*m_CommandBuffer,
+            .pCommandBuffers = &*m_CommandBuffers[m_FrameIndex],
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &*m_RenderCompleteSemaphore};
+            .pSignalSemaphores = &*m_RenderCompleteSemaphores[imageIndex]};
 
-        m_GraphicsQueue.submit(submitInfo, *m_DrawFence);
+        m_GraphicsQueue.submit(submitInfo, *m_DrawFences[m_FrameIndex]);
 
-        const vk::PresentInfoKHR presentInfo{.waitSemaphoreCount = 1,
-                                             .pWaitSemaphores =
-                                                 &*m_RenderCompleteSemaphore,
-                                             .swapchainCount = 1,
-                                             .pSwapchains = &*m_Swapchain,
-                                             .pImageIndices = &imageIndex};
+        const vk::PresentInfoKHR presentInfo{
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &*m_RenderCompleteSemaphores[imageIndex],
+            .swapchainCount = 1,
+            .pSwapchains = &*m_Swapchain,
+            .pImageIndices = &imageIndex};
 
         result = m_GraphicsQueue.presentKHR(presentInfo);
         if (result != vk::Result::eSuccess)
             throw std::runtime_error("Failed to present image!");
+
+        m_FrameIndex = (m_FrameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     void CreateInstance()
@@ -547,6 +549,8 @@ private:
 
         m_Swapchain = vk::raii::SwapchainKHR(m_Device, createInfo);
         m_SwapImages = m_Swapchain.getImages();
+
+        std::cout << "Swapchain image count: " << m_SwapImages.size() << "\n";
     }
 
     void CreateSwapchainImageViews()
@@ -680,15 +684,16 @@ private:
         vk::CommandBufferAllocateInfo allocInfo{
             .commandPool = m_CommandPool,
             .level = vk::CommandBufferLevel::ePrimary,
-            .commandBufferCount = 1};
-        m_CommandBuffer =
-            std::move(vk::raii::CommandBuffers(m_Device, allocInfo).front());
+            .commandBufferCount = MAX_FRAMES_IN_FLIGHT};
+        m_CommandBuffers = vk::raii::CommandBuffers(m_Device, allocInfo);
     }
 
     void RecordCommandBuffer(uint32_t imageIndex)
     {
+        m_CommandBuffers[m_FrameIndex].reset();
+
         vk::CommandBufferBeginInfo beginInfo{};
-        m_CommandBuffer.begin(beginInfo);
+        m_CommandBuffers[m_FrameIndex].begin(beginInfo);
 
         TransitionImageLayout(
             imageIndex, vk::ImageLayout::eUndefined,
@@ -711,20 +716,20 @@ private:
             .colorAttachmentCount = 1,
             .pColorAttachments = &attachmentInfo};
 
-        m_CommandBuffer.beginRendering(renderingInfo);
+        m_CommandBuffers[m_FrameIndex].beginRendering(renderingInfo);
 
-        m_CommandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
-                                     *m_GraphicsPipeline);
-        m_CommandBuffer.setViewport(
+        m_CommandBuffers[m_FrameIndex].bindPipeline(
+            vk::PipelineBindPoint::eGraphics, *m_GraphicsPipeline);
+        m_CommandBuffers[m_FrameIndex].setViewport(
             0, vk::Viewport(
                    0.f, 0.f, static_cast<float>(m_SwapchainExtent.width),
                    static_cast<float>(m_SwapchainExtent.height), 0.f, 1.f));
-        m_CommandBuffer.setScissor(
+        m_CommandBuffers[m_FrameIndex].setScissor(
             0, vk::Rect2D(vk::Offset2D(0, 0), m_SwapchainExtent));
 
-        m_CommandBuffer.draw(3, 1, 0, 0);
+        m_CommandBuffers[m_FrameIndex].draw(3, 1, 0, 0);
 
-        m_CommandBuffer.endRendering();
+        m_CommandBuffers[m_FrameIndex].endRendering();
 
         TransitionImageLayout(
             imageIndex, vk::ImageLayout::eColorAttachmentOptimal,
@@ -733,7 +738,7 @@ private:
             vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             vk::PipelineStageFlagBits2::eBottomOfPipe);
 
-        m_CommandBuffer.end();
+        m_CommandBuffers[m_FrameIndex].end();
     }
 
     void TransitionImageLayout(uint32_t imageIndex, vk::ImageLayout oldLayout,
@@ -762,17 +767,27 @@ private:
         vk::DependencyInfo info = {.dependencyFlags = {},
                                    .imageMemoryBarrierCount = 1,
                                    .pImageMemoryBarriers = &barrier};
-        m_CommandBuffer.pipelineBarrier2(info);
+        m_CommandBuffers[m_FrameIndex].pipelineBarrier2(info);
     }
 
     void CreateSyncObjects()
     {
-        m_PresentCompleteSemaphore =
-            vk::raii::Semaphore(m_Device, vk::SemaphoreCreateInfo());
-        m_RenderCompleteSemaphore =
-            vk::raii::Semaphore(m_Device, vk::SemaphoreCreateInfo());
-        m_DrawFence = vk::raii::Fence(
-            m_Device, {.flags = vk::FenceCreateFlagBits::eSignaled});
+        assert(m_RenderCompleteSemaphores.empty() &&
+               m_PresentCompleteSemaphores.empty() && m_DrawFences.empty());
+
+        for (size_t i = 0; i < m_SwapImages.size(); i++)
+        {
+            m_RenderCompleteSemaphores.emplace_back(
+                vk::raii::Semaphore(m_Device, vk::SemaphoreCreateInfo()));
+        }
+
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            m_PresentCompleteSemaphores.emplace_back(
+                vk::raii::Semaphore(m_Device, vk::SemaphoreCreateInfo()));
+            m_DrawFences.emplace_back(vk::raii::Fence(
+                m_Device, {.flags = vk::FenceCreateFlagBits::eSignaled}));
+        }
     }
 
 private:
@@ -787,7 +802,7 @@ private:
     vk::raii::PipelineLayout m_PipelineLayout = nullptr;
     vk::raii::Pipeline m_GraphicsPipeline = nullptr;
     vk::raii::CommandPool m_CommandPool = nullptr;
-    vk::raii::CommandBuffer m_CommandBuffer = nullptr;
+    std::vector<vk::raii::CommandBuffer> m_CommandBuffers;
 
     vk::SurfaceFormatKHR m_SwapchainSurfaceFormat;
     vk::Extent2D m_SwapchainExtent;
@@ -795,9 +810,10 @@ private:
     std::vector<vk::raii::ImageView> m_SwapImageViews;
     uint32_t m_QueueIndex = ~0;
 
-    vk::raii::Semaphore m_PresentCompleteSemaphore = nullptr;
-    vk::raii::Semaphore m_RenderCompleteSemaphore = nullptr;
-    vk::raii::Fence m_DrawFence = nullptr;
+    std::vector<vk::raii::Semaphore> m_PresentCompleteSemaphores;
+    std::vector<vk::raii::Semaphore> m_RenderCompleteSemaphores;
+    std::vector<vk::raii::Fence> m_DrawFences;
+    uint32_t m_FrameIndex = 0;
 
     SDL_Window* m_pWindow = nullptr;
     bool m_bIsFocused = true;

@@ -153,9 +153,6 @@ ChooseSwapchainExtent(const vk::SurfaceCapabilitiesKHR& capabilities,
         std::numeric_limits<uint32_t>::max())
         return capabilities.currentExtent;
 
-    std::cout << "Window manager allows resolutions that don't match the "
-                 "window. This is not an error.\n";
-
     // This has to be used rather than the raw window width and height as high
     // DPI displays might not match screen coordinates and pixels.
     int width, height;
@@ -212,6 +209,9 @@ public:
                     m_bIsFocused = false;
                     std::cout << "Focus lost.\n";
                     break;
+                case SDL_EVENT_WINDOW_RESIZED:
+                    RecreateSwapchain();
+                    break;
                 }
             }
 
@@ -261,13 +261,23 @@ private:
         if (fenceResult != vk::Result::eSuccess)
             throw std::runtime_error("Failed to wait for fence!");
 
-        m_Device.resetFences(*m_DrawFences[m_FrameIndex]);
-
         auto [result, imageIndex] = m_Swapchain.acquireNextImage(
             UINT64_MAX, *m_PresentCompleteSemaphores[m_FrameIndex], nullptr);
-        if (result != vk::Result::eSuccess)
-            throw std::runtime_error("Failed to acquire next swapchain image!");
 
+        if (result == vk::Result::eErrorOutOfDateKHR)
+        {
+            RecreateSwapchain();
+            return;
+        }
+        else if (result != vk::Result::eSuccess &&
+                 result != vk::Result::eSuboptimalKHR)
+        {
+            assert(result == vk::Result::eTimeout ||
+                   result == vk::Result::eNotReady);
+            throw std::runtime_error("Failed to acquire next swapchain image!");
+        }
+
+        m_Device.resetFences(*m_DrawFences[m_FrameIndex]);
         RecordCommandBuffer(imageIndex);
 
         vk::PipelineStageFlags waitDestinationStageFlags(
@@ -291,8 +301,15 @@ private:
             .pImageIndices = &imageIndex};
 
         result = m_GraphicsQueue.presentKHR(presentInfo);
-        if (result != vk::Result::eSuccess)
+        if ((result == vk::Result::eSuboptimalKHR) ||
+            (result == vk::Result::eErrorOutOfDateKHR))
+        {
+            RecreateSwapchain();
+        }
+        else if (result != vk::Result::eSuccess)
+        {
             throw std::runtime_error("Failed to present image!");
+        }
 
         m_FrameIndex = (m_FrameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
     }
@@ -788,6 +805,30 @@ private:
             m_DrawFences.emplace_back(vk::raii::Fence(
                 m_Device, {.flags = vk::FenceCreateFlagBits::eSignaled}));
         }
+    }
+
+    void RecreateSwapchain()
+    {
+		std::cout << "Recreating swapchain...\n";
+
+		int width, height;
+        SDL_GetWindowSizeInPixels(m_pWindow, &width, &height);
+        while (width == 0 || height == 0)
+        {
+            SDL_GetWindowSizeInPixels(m_pWindow, &width, &height);
+            SDL_Event event;
+            SDL_WaitEvent(&event);
+        }
+
+		m_Device.waitIdle();
+
+        m_SwapImageViews.clear();
+        m_Swapchain = nullptr;
+
+        m_Device.waitIdle();
+
+        CreateSwapchain();
+        CreateSwapchainImageViews();
     }
 
 private:

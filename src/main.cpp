@@ -20,6 +20,8 @@
 #include "vulkan/vulkan.hpp"
 #include "vulkan/vulkan_raii.hpp"
 
+#include "glm/glm.hpp"
+
 constexpr uint32_t WIDTH = 1920;
 constexpr uint32_t HEIGHT = 1080;
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
@@ -31,6 +33,36 @@ void HandleSIGINT(int)
     gbShouldClose = true;
     std::cout << "\n";
 }
+
+struct Vertex
+{
+    glm::vec2 Pos;
+    glm::vec3 Color;
+
+    static vk::VertexInputBindingDescription GetBindingDescription()
+    {
+        return {.binding = 0,
+                .stride = sizeof(Vertex),
+                .inputRate = vk::VertexInputRate::eVertex};
+    }
+
+    static std::array<vk::VertexInputAttributeDescription, 2>
+    GetAttributeDescription()
+    {
+        return {{{.location = 0,
+                  .binding = 0,
+                  .format = vk::Format::eR32G32Sfloat,
+                  .offset = offsetof(Vertex, Pos)},
+                 {.location = 1,
+                  .binding = 0,
+                  .format = vk::Format::eR32G32B32Sfloat,
+                  .offset = offsetof(Vertex, Color)}}};
+    }
+};
+
+const std::vector<Vertex> vertices = {{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+                                      {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+                                      {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}};
 
 std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -239,6 +271,7 @@ private:
         CreateSwapchain();
         CreateSwapchainImageViews();
         CreateGraphicsPipeline();
+        CreateVertexBuffer();
         CreateCommandPool();
         CreateCommandBuffer();
         CreateSyncObjects();
@@ -615,7 +648,13 @@ private:
         std::vector<vk::PipelineShaderStageCreateInfo> shaderStages = {
             vertCreateInfo, fragCreateInfo};
 
-        vk::PipelineVertexInputStateCreateInfo vertexInput{};
+        auto bindingDesc = Vertex::GetBindingDescription();
+        auto attributeDesc = Vertex::GetAttributeDescription();
+        vk::PipelineVertexInputStateCreateInfo vertexInput{
+            .vertexBindingDescriptionCount = 1,
+            .pVertexBindingDescriptions = &bindingDesc,
+            .vertexAttributeDescriptionCount = 2,
+            .pVertexAttributeDescriptions = attributeDesc.data()};
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
             .topology = vk::PrimitiveTopology::eTriangleList};
 
@@ -737,6 +776,8 @@ private:
 
         m_CommandBuffers[m_FrameIndex].bindPipeline(
             vk::PipelineBindPoint::eGraphics, *m_GraphicsPipeline);
+        m_CommandBuffers[m_FrameIndex].bindVertexBuffers(0, *m_VertexBuffer,
+                                                         {0});
         m_CommandBuffers[m_FrameIndex].setViewport(
             0, vk::Viewport(
                    0.f, 0.f, static_cast<float>(m_SwapchainExtent.width),
@@ -744,7 +785,7 @@ private:
         m_CommandBuffers[m_FrameIndex].setScissor(
             0, vk::Rect2D(vk::Offset2D(0, 0), m_SwapchainExtent));
 
-        m_CommandBuffers[m_FrameIndex].draw(3, 1, 0, 0);
+        m_CommandBuffers[m_FrameIndex].draw(vertices.size(), 1, 0, 0);
 
         m_CommandBuffers[m_FrameIndex].endRendering();
 
@@ -809,9 +850,9 @@ private:
 
     void RecreateSwapchain()
     {
-		std::cout << "Recreating swapchain...\n";
+        std::cout << "Recreating swapchain...\n";
 
-		int width, height;
+        int width, height;
         SDL_GetWindowSizeInPixels(m_pWindow, &width, &height);
         while (width == 0 || height == 0)
         {
@@ -820,7 +861,7 @@ private:
             SDL_WaitEvent(&event);
         }
 
-		m_Device.waitIdle();
+        m_Device.waitIdle();
 
         m_SwapImageViews.clear();
         m_Swapchain = nullptr;
@@ -829,6 +870,46 @@ private:
 
         CreateSwapchain();
         CreateSwapchainImageViews();
+    }
+
+    void CreateVertexBuffer()
+    {
+        vk::BufferCreateInfo bufferInfo{
+            .size = sizeof(vertices[0]) * vertices.size(),
+            .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+            .sharingMode = vk::SharingMode::eExclusive};
+        m_VertexBuffer = vk::raii::Buffer(m_Device, bufferInfo);
+
+        vk::MemoryRequirements memRequirements =
+            m_VertexBuffer.getMemoryRequirements();
+        vk::MemoryAllocateInfo allocInfo = {
+            .allocationSize = memRequirements.size,
+            .memoryTypeIndex =
+                FindMemoryType(memRequirements.memoryTypeBits,
+                               vk::MemoryPropertyFlagBits::eHostVisible |
+                                   vk::MemoryPropertyFlagBits::eHostCoherent)};
+
+        m_VertexBufferMemory = vk::raii::DeviceMemory(m_Device, allocInfo);
+        m_VertexBuffer.bindMemory(*m_VertexBufferMemory, 0);
+
+        void* data = m_VertexBufferMemory.mapMemory(0, bufferInfo.size);
+        memcpy(data, vertices.data(), bufferInfo.size);
+        m_VertexBufferMemory.unmapMemory();
+    }
+
+    uint32_t FindMemoryType(uint32_t typeFilter,
+                            vk::MemoryPropertyFlags properties)
+    {
+        vk::PhysicalDeviceMemoryProperties memProperties =
+            m_PhysicalDevice.getMemoryProperties();
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+        {
+            if ((typeFilter & (1 << i)) &&
+                (memProperties.memoryTypes[i].propertyFlags & properties) ==
+                    properties)
+                return i;
+        }
+        throw std::runtime_error("Failed to find a suitable memory type!");
     }
 
 private:
@@ -844,6 +925,8 @@ private:
     vk::raii::Pipeline m_GraphicsPipeline = nullptr;
     vk::raii::CommandPool m_CommandPool = nullptr;
     std::vector<vk::raii::CommandBuffer> m_CommandBuffers;
+    vk::raii::Buffer m_VertexBuffer = nullptr;
+    vk::raii::DeviceMemory m_VertexBufferMemory = nullptr;
 
     vk::SurfaceFormatKHR m_SwapchainSurfaceFormat;
     vk::Extent2D m_SwapchainExtent;

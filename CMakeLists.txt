@@ -12,6 +12,7 @@ set(SOURCES
 
 find_package(SDL3 CONFIG REQUIRED)
 find_package(Vulkan REQUIRED)
+find_package(glm CONFIG REQUIRED)
 
 add_executable(VulkanApp)
 
@@ -22,6 +23,7 @@ target_sources(VulkanApp PRIVATE
 target_link_libraries(VulkanApp PRIVATE
 	SDL3::SDL3
 	Vulkan::Vulkan
+	glm::glm
 )
 
 target_include_directories(VulkanApp PRIVATE

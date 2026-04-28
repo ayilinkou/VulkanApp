@@ -1,0 +1,44 @@
+{
+	"version": 2,
+	"configurePresets": [
+		{
+			"name": "default",
+			"hidden": true,
+			"generator": "Ninja",
+			"binaryDir": "${sourceDir}/build/${presetName}",
+			"cacheVariables": {
+				"CMAKE_TOOLCHAIN_FILE": "./vcpkg/scripts/buildsystems/vcpkg.cmake",
+				"VCPKG_TARGET_TRIPLET": "x64-linux"
+			}
+		},
+		{
+			"name": "ninja-debug",
+			"inherits": "default",
+			"displayName": "Ninja debug",
+			"description": "Default build using Ninja for the debug config",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Debug"
+			}
+		},
+		{
+			"name": "ninja-release",
+			"inherits": "default",
+			"displayName": "Ninja release",
+			"description": "Default build using Ninja for the release config",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Release"
+			}
+
+		}
+	],
+	"buildPresets": [
+		{
+			"name": "ninja-debug",
+			"configurePreset": "ninja-debug"
+		},
+		{
+			"name": "ninja-release",
+			"configurePreset": "ninja-release"
+		}
+	]
+}

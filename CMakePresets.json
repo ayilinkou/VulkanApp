@@ -1,5 +1,5 @@
 {
-	"version": 2,
+	"version": 6,
 	"configurePresets": [
 		{
 			"name": "base",
@@ -55,6 +55,43 @@
 		{
 			"name": "ninja-release-linux",
 			"configurePreset": "ninja-release-linux"
+		}
+	],
+	"workflowPresets": [
+		{
+			"name": "ninja-debug-linux",
+			"steps": [
+				{
+					"type": "configure",
+					"name": "ninja-debug-linux"
+				},
+				{
+					"type": "build",
+					"name": "ninja-debug-linux"
+				}
+			]
+		},
+		{
+			"name": "ninja-release-linux",
+			"steps": [
+				{
+					"type": "configure",
+					"name": "ninja-release-linux"
+				},
+				{
+					"type": "build",
+					"name": "ninja-release-linux"
+				}
+			]
+		},
+		{
+			"name": "generate-sln",
+			"steps": [
+				{
+					"type": "configure",
+					"name": "msvc"
+				}
+			]
 		}
 	]
 }

@@ -76,15 +76,25 @@ constexpr bool bEnableValidationLayers = false;
 constexpr bool bEnableValidationLayers = true;
 #endif
 
+vk::DebugUtilsMessageSeverityFlagBitsEXT validationSeverityThreshold =
+    vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning;
+
 static VKAPI_ATTR vk::Bool32 VKAPI_CALL
 DebugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
               vk::DebugUtilsMessageTypeFlagsEXT type,
               const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
               void* pUserData)
 {
-    std::cerr << "validation layer: type " << to_string(type)
+    if (severity < validationSeverityThreshold)
+        return vk::False;
+
+    std::cerr << "Validation layer: type " << to_string(type)
               << " msg: " << pCallbackData->pMessage << std::endl;
 
+    if (pUserData)
+    {
+        // TODO: use this when needed
+    }
     return vk::False;
 }
 
@@ -533,7 +543,8 @@ private:
             if ((qfProperties[qfpIndex].queueFlags &
                  vk::QueueFlagBits::eGraphics) !=
                     static_cast<vk::QueueFlags>(0) &&
-                m_PhysicalDevice.getSurfaceSupportKHR(static_cast<uint32_t>(qfpIndex), m_Surface))
+                m_PhysicalDevice.getSurfaceSupportKHR(
+                    static_cast<uint32_t>(qfpIndex), m_Surface))
 
             {
                 m_QueueIndex = static_cast<uint32_t>(qfpIndex);
@@ -541,7 +552,7 @@ private:
             }
         }
 
-        if (m_QueueIndex == ~0)
+        if (m_QueueIndex == std::numeric_limits<uint32_t>::max())
             std::runtime_error(
                 "Could not find a queue for graphics and presenting!");
 
@@ -550,8 +561,6 @@ private:
             .queueFamilyIndex = m_QueueIndex,
             .queueCount = 1,
             .pQueuePriorities = &queuePriority};
-
-        vk::PhysicalDeviceFeatures deviceFeatures;
 
         vk::StructureChain<vk::PhysicalDeviceFeatures2,
                            vk::PhysicalDeviceVulkan11Features,
@@ -681,8 +690,11 @@ private:
         vk::PipelineDynamicStateCreateInfo dynamicState{
             .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
             .pDynamicStates = dynamicStates.data()};
-        vk::PipelineViewportStateCreateInfo viewportState{.viewportCount = 1,
-                                                          .scissorCount = 1};
+        vk::PipelineViewportStateCreateInfo viewportState{
+            .viewportCount = 1,
+            .pViewports = &viewport,
+            .scissorCount = 1,
+            .pScissors = &scissor};
 
         vk::PipelineRasterizationStateCreateInfo rasterState{
             .depthClampEnable = vk::False,
@@ -796,7 +808,8 @@ private:
         m_CommandBuffers[m_FrameIndex].setScissor(
             0, vk::Rect2D(vk::Offset2D(0, 0), m_SwapchainExtent));
 
-        m_CommandBuffers[m_FrameIndex].drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+        m_CommandBuffers[m_FrameIndex].drawIndexed(
+            static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
         m_CommandBuffers[m_FrameIndex].endRendering();
 

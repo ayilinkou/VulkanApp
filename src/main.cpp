@@ -2,6 +2,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <fstream>
@@ -60,9 +61,12 @@ struct Vertex
     }
 };
 
-const std::vector<Vertex> vertices = {{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-                                      {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-                                      {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}};
+const std::vector<Vertex> vertices = {{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+                                      {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+                                      {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+                                      {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}};
+
+const std::vector<uint32_t> indices = {0, 1, 2, 2, 3, 0};
 
 std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -271,9 +275,10 @@ private:
         CreateSwapchain();
         CreateSwapchainImageViews();
         CreateGraphicsPipeline();
-        CreateVertexBuffer();
         CreateCommandPool();
-        CreateCommandBuffer();
+        CreateCommandBuffers();
+        CreateVertexBuffer();
+        CreateIndexBuffer();
         CreateSyncObjects();
     }
 
@@ -735,7 +740,7 @@ private:
         m_CommandPool = vk::raii::CommandPool(m_Device, createInfo);
     }
 
-    void CreateCommandBuffer()
+    void CreateCommandBuffers()
     {
         vk::CommandBufferAllocateInfo allocInfo{
             .commandPool = m_CommandPool,
@@ -778,6 +783,8 @@ private:
             vk::PipelineBindPoint::eGraphics, *m_GraphicsPipeline);
         m_CommandBuffers[m_FrameIndex].bindVertexBuffers(0, *m_VertexBuffer,
                                                          {0});
+        m_CommandBuffers[m_FrameIndex].bindIndexBuffer(*m_IndexBuffer, 0,
+                                                       vk::IndexType::eUint32);
         m_CommandBuffers[m_FrameIndex].setViewport(
             0, vk::Viewport(
                    0.f, 0.f, static_cast<float>(m_SwapchainExtent.width),
@@ -785,7 +792,7 @@ private:
         m_CommandBuffers[m_FrameIndex].setScissor(
             0, vk::Rect2D(vk::Offset2D(0, 0), m_SwapchainExtent));
 
-        m_CommandBuffers[m_FrameIndex].draw(vertices.size(), 1, 0, 0);
+        m_CommandBuffers[m_FrameIndex].drawIndexed(indices.size(), 1, 0, 0, 0);
 
         m_CommandBuffers[m_FrameIndex].endRendering();
 
@@ -874,27 +881,26 @@ private:
 
     void CreateVertexBuffer()
     {
-        vk::BufferCreateInfo bufferInfo{
-            .size = sizeof(vertices[0]) * vertices.size(),
-            .usage = vk::BufferUsageFlagBits::eVertexBuffer,
-            .sharingMode = vk::SharingMode::eExclusive};
-        m_VertexBuffer = vk::raii::Buffer(m_Device, bufferInfo);
+        vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
 
-        vk::MemoryRequirements memRequirements =
-            m_VertexBuffer.getMemoryRequirements();
-        vk::MemoryAllocateInfo allocInfo = {
-            .allocationSize = memRequirements.size,
-            .memoryTypeIndex =
-                FindMemoryType(memRequirements.memoryTypeBits,
-                               vk::MemoryPropertyFlagBits::eHostVisible |
-                                   vk::MemoryPropertyFlagBits::eHostCoherent)};
+        vk::raii::Buffer stagingBuffer({});
+        vk::raii::DeviceMemory stagingBufferMemory({});
+        CreateBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                     vk::MemoryPropertyFlagBits::eHostCoherent |
+                         vk::MemoryPropertyFlagBits::eHostCoherent,
+                     stagingBuffer, stagingBufferMemory);
 
-        m_VertexBufferMemory = vk::raii::DeviceMemory(m_Device, allocInfo);
-        m_VertexBuffer.bindMemory(*m_VertexBufferMemory, 0);
+        void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+        memcpy(dataStaging, vertices.data(), static_cast<size_t>(bufferSize));
+        stagingBufferMemory.unmapMemory();
 
-        void* data = m_VertexBufferMemory.mapMemory(0, bufferInfo.size);
-        memcpy(data, vertices.data(), bufferInfo.size);
-        m_VertexBufferMemory.unmapMemory();
+        CreateBuffer(bufferSize,
+                     vk::BufferUsageFlagBits::eVertexBuffer |
+                         vk::BufferUsageFlagBits::eTransferDst,
+                     vk::MemoryPropertyFlagBits::eDeviceLocal, m_VertexBuffer,
+                     m_VertexBufferMemory);
+
+        CopyBuffer(stagingBuffer, m_VertexBuffer, bufferSize);
     }
 
     uint32_t FindMemoryType(uint32_t typeFilter,
@@ -912,6 +918,74 @@ private:
         throw std::runtime_error("Failed to find a suitable memory type!");
     }
 
+    void CreateBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
+                      vk::MemoryPropertyFlags properties,
+                      vk::raii::Buffer& buffer,
+                      vk::raii::DeviceMemory& bufferMemory)
+    {
+        vk::BufferCreateInfo bufferInfo{.size = size,
+                                        .usage = usage,
+                                        .sharingMode =
+                                            vk::SharingMode::eExclusive};
+        buffer = vk::raii::Buffer(m_Device, bufferInfo);
+
+        vk::MemoryRequirements memRequirements = buffer.getMemoryRequirements();
+        vk::MemoryAllocateInfo allocInfo = {
+            .allocationSize = memRequirements.size,
+            .memoryTypeIndex =
+                FindMemoryType(memRequirements.memoryTypeBits, properties)};
+
+        bufferMemory = vk::raii::DeviceMemory(m_Device, allocInfo);
+        buffer.bindMemory(*bufferMemory, 0);
+    }
+
+    void CopyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& dstBuffer,
+                    vk::DeviceSize size)
+    {
+        vk::CommandBufferAllocateInfo allocInfo{
+            .commandPool = m_CommandPool,
+            .level = vk::CommandBufferLevel::ePrimary,
+            .commandBufferCount = 1};
+        vk::raii::CommandBuffer commandCopyBuffer =
+            std::move(m_Device.allocateCommandBuffers(allocInfo).front());
+
+        commandCopyBuffer.begin(vk::CommandBufferBeginInfo{
+            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        commandCopyBuffer.copyBuffer(srcBuffer, dstBuffer,
+                                     vk::BufferCopy{0, 0, size});
+        commandCopyBuffer.end();
+
+        m_GraphicsQueue.submit(
+            vk::SubmitInfo{.commandBufferCount = 1,
+                           .pCommandBuffers = &*commandCopyBuffer},
+            nullptr);
+        m_GraphicsQueue.waitIdle();
+    }
+
+    void CreateIndexBuffer()
+    {
+        vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+
+        vk::raii::Buffer stagingBuffer({});
+        vk::raii::DeviceMemory stagingBufferMemory({});
+        CreateBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                     vk::MemoryPropertyFlagBits::eHostCoherent |
+                         vk::MemoryPropertyFlagBits::eHostCoherent,
+                     stagingBuffer, stagingBufferMemory);
+
+        void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+        memcpy(dataStaging, indices.data(), static_cast<size_t>(bufferSize));
+        stagingBufferMemory.unmapMemory();
+
+        CreateBuffer(bufferSize,
+                     vk::BufferUsageFlagBits::eIndexBuffer |
+                         vk::BufferUsageFlagBits::eTransferDst,
+                     vk::MemoryPropertyFlagBits::eDeviceLocal, m_IndexBuffer,
+                     m_IndexBufferMemory);
+
+        CopyBuffer(stagingBuffer, m_IndexBuffer, bufferSize);
+    }
+
 private:
     vk::raii::Context m_Context;
     vk::raii::Instance m_Instance = nullptr;
@@ -927,6 +1001,8 @@ private:
     std::vector<vk::raii::CommandBuffer> m_CommandBuffers;
     vk::raii::Buffer m_VertexBuffer = nullptr;
     vk::raii::DeviceMemory m_VertexBufferMemory = nullptr;
+    vk::raii::Buffer m_IndexBuffer = nullptr;
+    vk::raii::DeviceMemory m_IndexBufferMemory = nullptr;
 
     vk::SurfaceFormatKHR m_SwapchainSurfaceFormat;
     vk::Extent2D m_SwapchainExtent;

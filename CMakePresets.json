@@ -2,43 +2,59 @@
 	"version": 2,
 	"configurePresets": [
 		{
-			"name": "default",
+			"name": "base",
 			"hidden": true,
-			"generator": "Ninja",
 			"binaryDir": "${sourceDir}/build/${presetName}",
 			"cacheVariables": {
-				"CMAKE_TOOLCHAIN_FILE": "./vcpkg/scripts/buildsystems/vcpkg.cmake",
+				"CMAKE_TOOLCHAIN_FILE": "./vcpkg/scripts/buildsystems/vcpkg.cmake"
+			}
+		},
+		{
+			"name": "linux-base",
+			"inherits": "base",
+			"hidden": true,
+			"cacheVariables": {
 				"VCPKG_TARGET_TRIPLET": "x64-linux"
 			}
 		},
 		{
-			"name": "ninja-debug",
-			"inherits": "default",
-			"displayName": "Ninja debug",
-			"description": "Default build using Ninja for the debug config",
+			"name": "ninja-debug-linux",
+			"inherits": "linux-base",
+			"generator": "Ninja",
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "Debug"
 			}
 		},
 		{
-			"name": "ninja-release",
-			"inherits": "default",
-			"displayName": "Ninja release",
-			"description": "Default build using Ninja for the release config",
+			"name": "ninja-release-linux",
+			"inherits": "linux-base",
+			"generator": "Ninja",
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "Release"
 			}
-
+		},
+		{
+			"name": "windows-base",
+			"inherits": "base",
+			"hidden": true,
+			"cacheVariables": {
+				"VCPKG_TARGET_TRIPLET": "x64-windows"
+			}
+		},
+		{
+			"name": "msvc",
+			"inherits": "windows-base",
+			"generator": "Visual Studio 17 2022"
 		}
 	],
 	"buildPresets": [
 		{
-			"name": "ninja-debug",
-			"configurePreset": "ninja-debug"
+			"name": "ninja-debug-linux",
+			"configurePreset": "ninja-debug-linux"
 		},
 		{
-			"name": "ninja-release",
-			"configurePreset": "ninja-release"
+			"name": "ninja-release-linux",
+			"configurePreset": "ninja-release-linux"
 		}
 	]
 }

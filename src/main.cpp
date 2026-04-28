@@ -248,6 +248,10 @@ public:
                 case SDL_EVENT_WINDOW_RESIZED:
                     RecreateSwapchain();
                     break;
+                case SDL_EVENT_KEY_DOWN:
+                    if (event.key.key == SDLK_ESCAPE)
+                        gbShouldClose = true;
+                    break;
                 }
             }
 
@@ -529,7 +533,7 @@ private:
             if ((qfProperties[qfpIndex].queueFlags &
                  vk::QueueFlagBits::eGraphics) !=
                     static_cast<vk::QueueFlags>(0) &&
-                m_PhysicalDevice.getSurfaceSupportKHR(qfpIndex, m_Surface))
+                m_PhysicalDevice.getSurfaceSupportKHR(static_cast<uint32_t>(qfpIndex), m_Surface))
 
             {
                 m_QueueIndex = static_cast<uint32_t>(qfpIndex);
@@ -792,7 +796,7 @@ private:
         m_CommandBuffers[m_FrameIndex].setScissor(
             0, vk::Rect2D(vk::Offset2D(0, 0), m_SwapchainExtent));
 
-        m_CommandBuffers[m_FrameIndex].drawIndexed(indices.size(), 1, 0, 0, 0);
+        m_CommandBuffers[m_FrameIndex].drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
         m_CommandBuffers[m_FrameIndex].endRendering();
 

@@ -14,6 +14,11 @@ find_package(SDL3 CONFIG REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(glm CONFIG REQUIRED)
 
+find_program(SLANGC_EXECUTABLE slangc)
+if(NOT SLANGC_EXECUTABLE)
+    message(FATAL_ERROR "slangc not found!")
+endif()
+
 add_executable(VulkanApp)
 
 target_sources(VulkanApp PRIVATE
@@ -42,8 +47,6 @@ target_compile_options(VulkanApp PRIVATE
 set(SHADER_SLANG_SOURCES
 	${CMAKE_CURRENT_LIST_DIR}/src/shaders/shader.slang
 )
-
-set(SLANGC_EXECUTABLE slangc)
 
 function (add_slang_shader_target TARGET)
   cmake_parse_arguments ("SHADER" "" "" "SOURCES" ${ARGN})

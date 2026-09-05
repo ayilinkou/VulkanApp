@@ -11,7 +11,7 @@
 
 #include <platform/Paths.h>
 
-#include <assets/AssetCache.h>
+#include <asset/AssetCache.h>
 
 #include <core/Log.h>
 
@@ -129,7 +129,7 @@ private:
     CubemapLoader m_CubemapLoader;
     ModelLoader m_ModelLoader;
 
-    Hikari::Assets::AssetCache<Texture> m_TextureCache;
-    Hikari::Assets::AssetCache<Cubemap> m_CubemapCache;
-    Hikari::Assets::AssetCache<ModelData> m_ModelCache;
+    Hikari::Asset::AssetCache<Texture> m_TextureCache;
+    Hikari::Asset::AssetCache<Cubemap> m_CubemapCache;
+    Hikari::Asset::AssetCache<ModelData> m_ModelCache;
 };

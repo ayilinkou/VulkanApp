@@ -27,7 +27,7 @@ enum TextureBinding : uint8_t
  * having to know that a view must not outlive its image.
  *
  * Asset-side rather than part of the RHI: it carries the path it was loaded
- * from, which is what ResourceCache keys on. It moves into an Assets module in
+ * from, which is what ResourceCache keys on. It moves into the Asset module in
  * Stage 7 along with the rest of the loading path.
  */
 class Texture

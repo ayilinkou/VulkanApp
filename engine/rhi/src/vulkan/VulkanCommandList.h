@@ -46,5 +46,9 @@ public:
 private:
     VulkanDevice& m_Device;
     vk::CommandBuffer m_Cmd;
+
+public:
+    /** The buffer this records into, for the native escape hatch. */
+    vk::CommandBuffer Native() const { return m_Cmd; }
 };
 } // namespace Hikari::Rhi::Vulkan

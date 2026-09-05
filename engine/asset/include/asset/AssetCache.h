@@ -7,7 +7,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace Hikari::Assets
+namespace Hikari::Asset
 {
 
 /**
@@ -71,4 +71,4 @@ private:
     mutable std::mutex m_Mutex;
 };
 
-} // namespace Hikari::Assets
+} // namespace Hikari::Asset

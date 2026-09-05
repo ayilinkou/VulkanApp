@@ -398,9 +398,9 @@ Nine CMake targets. Arrows point to allowed dependencies; nothing else may be li
 | `Core` | static lib | *(nothing but std + glm)* | Vulkan, SDL, assimp, ImGui |
 | `Platform` | static lib | `Core` | Vulkan, rendering |
 | `RHI` | static lib | `Core`, `Platform`, Vulkan, VMA | assimp, ImGui, scene concepts |
-| `Assets` | static lib | `Core`, `Platform`, `RHI`, assimp, stb | ECS, render passes |
-| `Scene` | static lib | `Core`, `Platform`, `Assets`, pugixml | `RHI`, Vulkan |
-| `Render` | static lib | `Core`, `RHI`, `Assets` | ECS internals (receives snapshots) |
+| `Asset` | static lib | `Core`, `Platform`, `RHI`, assimp, stb | ECS, render passes |
+| `Scene` | static lib | `Core`, `Platform`, `Asset`, pugixml | `RHI`, Vulkan |
+| `Render` | static lib | `Core`, `RHI`, `Asset` | ECS internals (receives snapshots) |
 | `Engine` | static lib | all of the above | ImGui |
 | `Editor` | static lib | `Engine`, ImGui, ImGuiFileDialog | — |
 | `HikariEngine` | exe | `Engine`, `Editor` | — |
@@ -2489,7 +2489,7 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
   confirms their caches are separate (impossible today).
 - **Size:** L · **Needs:** 41
 - **Landed (2026-09-05), with two deviations:**
-  - **`engine/assets` holds `AssetCache` only; `AssetRegistry` stays in `src/`.** The registry
+  - **`engine/asset` holds `AssetCache` only; `AssetRegistry` stays in `src/`.** The registry
     caches `Texture`, `Cubemap` and `ModelData`, and its implementation needs those complete —
     they are `src/` types until Stage 8 splits them into `TextureData`/`MeshData`. Same
     constraint that kept `Engine` in `src/` at step 41, and it resolves the same way: the
@@ -2497,7 +2497,7 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
   - **The two-registries test is a two-caches test.** `AssetRegistry` is not linkable from
     `tests/` while it lives in `src/` and needs a device, so the independence the step is about
     — no process-wide table behind the caches — is asserted against `AssetCache` directly, in
-    `tests/unit/assets/AssetCacheTests.cpp`. The registry-level test arrives with the registry.
+    `tests/unit/asset/AssetCacheTests.cpp`. The registry-level test arrives with the registry.
 
   What did land in full: the `Get()` singletons for `ResourceManager`, `TextureLoader`,
   `CubemapLoader` and `ModelLoader` are gone, the registry owns the three loaders and is
@@ -2513,7 +2513,7 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
 - **Landed (2026-09-05), owned by `Engine` rather than by `AssetRegistry`.** The factory has
   callers on both sides of the asset/renderer line: `ModelLoader` builds materials with it while
   loading, and the opaque and transparent pipeline layouts are built against its descriptor set
-  layout. Registry ownership would put a `vk::DescriptorSetLayout` on `engine/assets`' public
+  layout. Registry ownership would put a `vk::DescriptorSetLayout` on `engine/asset`' public
   surface — and an `rhi/vulkan/` allowlist entry on a module that otherwise needs none — for the
   sake of the renderer's use of it. `Engine` builds it before the registry and passes it through
   to `ModelLoader`, the one loader that needs it; it is destroyed after the registry, since the
@@ -2592,6 +2592,34 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
   headless — see 40a — so this costs no CI coverage of it; step 47's assertions run against a
   build that drew the panel.
 - **Size:** M · **Needs:** 40a, 41, 44 (`--no-ui` already exists)
+- **Landed (2026-09-05), and it was not M.** This step inherited the move step 41 deferred: the
+  engine could not be shared by two binaries while it lived in `src/main.cpp`. What happened:
+  - **`src/` no longer exists.** Everything in it moved to `engine/engine/src/`, private to the
+    module, exactly as `stage7_plan.md`'s cross-cutting note anticipated — renderer internals
+    live in `engine/engine` until Stage 8 draws the Render/Scene boundary deliberately. Stage 8
+    then promotes files out of that directory rather than migrating them out of an application.
+    The shaders went with them, to `engine/engine/src/shaders/`, because `common.slangh`
+    includes `../Common.h` and that relative path had to keep resolving.
+  - **The engine class lives wholly in `Engine.cpp`**, with no header. `namespace_check` forbids
+    using-directives in headers, and a header carrying the class would have meant qualifying
+    every name across 2,000 lines of code scheduled for demolition. Nothing else in the module
+    needs the class: apps see `IEngine`, `CreateEngine` and `EngineDesc`.
+  - **`RunApp` in `engine/engine` holds what both binaries do** once they have a platform —
+    diagnostics, the job system, the content root, the engine, the files a run leaves behind,
+    and the exit code. That is what keeps each `main.cpp` to its own flags and its own platform.
+    `WriteRunReport` moved here and PNG encoding to `engine/asset`, as §41 said they would.
+  - **`engine/editor` holds `VulkanUiBackend` only.** `IUiBackend` is declared in
+    `engine/engine`, because §8's layering puts Editor *above* Engine: the app builds the
+    backend and hands it over. The panels stay in the engine — they read the camera, the scene
+    graph and the model manager — and become `EditorLayer` when Stage 8 moves what they read.
+  - **One new escape-hatch accessor**, `Rhi::Vulkan::GetNative(ICommandList&)`, because ImGui's
+    backend takes a `VkCommandBuffer` by value. B5 retires it with the rest of the recording
+    path. The allowlist went from sixteen sites to eighteen: `main.cpp`'s three became
+    `Engine.cpp`'s three plus the editor's one.
+- **Verified:** an editor capture and a headless capture of the same scene at 1920x1080, both
+  `--no-ui`, are pixel-identical; the committed baseline's counters, run block and pixels all
+  match through `HikariEditor`; `precommit.sh` green, including the header self-containment
+  check repointed from `src/` to the module's private headers.
 
 ### 47. Wire headless tests into CI
 **How this step is built is settled in `docs/stage7_plan.md`**, which supersedes the Do and
@@ -2881,11 +2909,11 @@ Steps you should **not** attempt out of order:
 | `Barrier.h` | `engine/rhi/include/rhi/Barrier.h` | + `BarrierBatcher` |
 | `PipelineBuilder.*` `ComputePipelineBuilder.*` | `engine/rhi/` | merge the shared parts |
 | `Texture.*` `Cubemap.*` | `engine/rhi/{Image,TextureView}.h` + `assets/TextureData.h` | split GPU vs CPU |
-| `TextureLoader.*` `CubemapLoader.*` `ModelLoader.*` | `engine/assets/src/importers/` | pure `→ *Data` functions |
-| `ResourceManager.*` `ResourceCache.h` | `engine/assets/{AssetRegistry,AssetCache}.h` | keyed by `AssetId` |
+| `TextureLoader.*` `CubemapLoader.*` `ModelLoader.*` | `engine/asset/src/importers/` | pure `→ *Data` functions |
+| `ResourceManager.*` `ResourceCache.h` | `engine/asset/{AssetRegistry,AssetCache}.h` | keyed by `AssetId` |
 | `Model.*` `ModelData.*` `Mesh.*` | `assets/MeshData.h` + `assets/GpuMeshRegistry.h` + `scene/components/MeshRenderer.h` | one class → three concerns |
 | `Material.*` `PBRMaterial.*` `MaterialFactory.*` | `assets/MaterialData.h` + `assets/MaterialRegistry.h` | params → SSBO |
-| `Node.*` | `engine/assets/src/importers/ModelImporter.cpp` | import-time only; not runtime state |
+| `Node.*` | `engine/asset/src/importers/ModelImporter.cpp` | import-time only; not runtime state |
 | `Entity.*` `Component.h` `SceneComponent.*` `LogicComponent.h` | `engine/scene/{World,Entity}.h` + `components/` | ECS |
 | `SceneGraph.h` | `engine/scene/World.h` + `scene/SceneDesc.h` | |
 | `Transform.*` | `scene/components/Transform.h` + `systems/TransformSystem.cpp` | quaternion rotation |

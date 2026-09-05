@@ -3,9 +3,9 @@
 #include <memory>
 #include <string>
 
-#include <assets/AssetCache.h>
+#include <asset/AssetCache.h>
 
-using Hikari::Assets::AssetCache;
+using Hikari::Asset::AssetCache;
 
 namespace
 {

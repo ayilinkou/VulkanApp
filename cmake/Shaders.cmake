@@ -50,7 +50,7 @@ endif()
 function(add_slang_shader_target target)
   cmake_parse_arguments("SHADER" "" "" "SOURCES" ${ARGN})
 
-  set(shaders_source_dir ${CMAKE_SOURCE_DIR}/src/shaders)
+  set(shaders_source_dir ${CMAKE_SOURCE_DIR}/engine/engine/src/shaders)
   set(shaders_out_dir ${HIKARI_EXE_DIR}/shaders)
 
   set(spv_outputs "")
@@ -102,7 +102,6 @@ function(add_slang_shader_target target)
 endfunction()
 
 file(GLOB_RECURSE shader_slang_sources CONFIGURE_DEPENDS
-     ${CMAKE_SOURCE_DIR}/src/shaders/*.slang)
+     ${CMAKE_SOURCE_DIR}/engine/engine/src/shaders/*.slang)
 
 add_slang_shader_target(CompileShadersTarget SOURCES ${shader_slang_sources})
-add_dependencies(HikariEngine CompileShadersTarget)

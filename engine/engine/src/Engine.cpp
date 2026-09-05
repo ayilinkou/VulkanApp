@@ -1,3 +1,13 @@
+// The engine itself, whole. Private to this module — it names the renderer, the
+// scene and the asset types that live beside it in src/ — and reached from
+// outside only through <engine/IEngine.h>, which CreateEngine below implements.
+//
+// One translation unit rather than a header and a source: nothing else in the
+// module needs the class, and a header carrying it would have to qualify every
+// name in 2,000 lines that the using-directives below cover. Stage 8 splits it
+// by promoting whole passes out, not by cutting it in half here.
+
+#include <atomic>
 #include <span>
 
 #include "AssetRegistry.h"
@@ -20,22 +30,18 @@
 #include <core/Clock.h>
 #include <core/IJobSystem.h>
 #include <core/Log.h>
-#include <core/SerialJobSystem.h>
-#include <core/SharedQueueJobSystem.h>
 #include <core/Timer.h>
 
 #include <engine/CameraPresets.h>
 #include <engine/EngineConfig.h>
-#include <engine/ParseEngineOptions.h>
+#include <engine/IEngine.h>
+#include <engine/IUiBackend.h>
 #include <engine/RunResult.h>
 #include <engine/RunSpec.h>
 
-#include <platform/CommandLine.h>
 #include <platform/FileSystem.h>
-#include <platform/HeadlessPlatform.h>
 #include <platform/IPlatform.h>
 #include <platform/Paths.h>
-#include <platform/SdlPlatform.h>
 
 #include <rhi/BarrierPresets.h>
 #include <rhi/BufferDesc.h>
@@ -55,83 +61,19 @@
 #include <rhi/vulkan/PipelineBuilder.h>
 #include <rhi/vulkan/VulkanNative.h>
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
+#include <SDL3/SDL.h>
 
 #include "ImGuiFileDialog.h"
+#include "imgui.h"
 
 using namespace Hikari;
 using namespace Hikari::Core;
 using namespace Hikari::Platform;
 using namespace Hikari::Rhi::Vulkan;
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <io.h>
-#include <windows.h>
-
-inline void EnableAnsiColors()
-{
-    for (DWORD stdHandle : {STD_OUTPUT_HANDLE, STD_ERROR_HANDLE})
-    {
-        HANDLE handle = GetStdHandle(stdHandle);
-        if (handle == INVALID_HANDLE_VALUE)
-            continue;
-
-        DWORD mode = 0;
-        if (!GetConsoleMode(handle, &mode))
-            continue;
-
-        SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-    }
-}
-#else
-// For write(), which is what the signal handler prints its newline with.
-#include <unistd.h>
-#endif
-
-constexpr LogCategory LogValidationLayer("Validation Layer");
-constexpr LogCategory LogDiagnostics("Diagnostics");
-constexpr LogCategory LogSDL("SDL");
 constexpr LogCategory LogWindow("Window");
-constexpr LogCategory LogMain("main");
+constexpr LogCategory LogEngine("Engine");
 constexpr LogCategory LogRenderer("Renderer");
-constexpr LogCategory LogImGui("InitImGui");
-
-std::atomic<bool> g_bShouldClose = false;
-
-/**
- * Asks the loop to stop, for either signal that means "shut down": SIGINT from
- * Ctrl-C at a terminal, SIGTERM from a CI runner's timeout or a process
- * manager. Both leave the loop the ordinary way, so the screenshot and the run
- * report are still written — which is the whole point of handling SIGTERM,
- * since a killed run produces no artefacts to diagnose the timeout with.
- *
- * A second signal deliberately does nothing new. Escalating to _Exit would drop
- * exactly those artefacts for a user who was merely impatient; a run whose
- * shutdown is genuinely wedged is what SIGKILL is for.
- *
- * `g_bShouldClose` is a lock-free std::atomic<bool>, which a handler may touch.
- * The newline goes through write() rather than std::cout because only
- * async-signal-safe functions may be called from a handler, and formatted
- * output is not one of them: interrupting a stream mid-write and re-entering it
- * is undefined, and the failure is a corrupted or deadlocked stdout rather than
- * anything that announces itself.
- */
-void HandleTerminationSignal(int)
-{
-    g_bShouldClose = true;
-
-#ifdef _WIN32
-    const int written = _write(1, "\n", 1);
-#else
-    const ssize_t written = write(STDOUT_FILENO, "\n", 1);
-#endif
-    // Nothing useful to do if the write fails, and a handler cannot report it.
-    // Consumed because write() is declared warn_unused_result.
-    (void)written;
-}
 
 struct LightData
 {
@@ -173,63 +115,6 @@ constexpr bool bEnableValidationLayers = true;
 #endif
 
 /**
- * Routes the RHI's validation messages into the log. Rhi::Diagnostics has
- * already counted and captured the message by the time this runs; this decides
- * only how it is presented. Called from the driver's debug callback, so it may
- * run on any thread.
- */
-void HandleRhiDiagnostic(Rhi::DiagnosticSeverity severity, std::string_view message)
-{
-    LogSeverity logSeverity = LogSeverity::Info;
-    switch (severity)
-    {
-        case Rhi::DiagnosticSeverity::Info:
-            logSeverity = LogSeverity::Info;
-            break;
-        case Rhi::DiagnosticSeverity::Warning:
-            logSeverity = LogSeverity::Warning;
-            break;
-        case Rhi::DiagnosticSeverity::Error:
-            logSeverity = LogSeverity::Error;
-            break;
-    }
-
-    LogMsg(logSeverity, LogValidationLayer, "{}", message);
-}
-
-/**
- * What the app parses out of the command line: the engine's two inputs, plus
- * the flags only a binary with a window and somewhere to write can answer for.
- */
-struct AppOptions
-{
-    Engine::RunSpec Spec;
-    Engine::EngineConfig Config;
-
-    /** --screenshot: a path, or the flag alone for an automatically named one. */
-    std::string ScreenshotPath;
-    bool bScreenshotAutoPath = false;
-
-    /** --report, the same way. */
-    std::string ReportPath;
-    bool bReportAutoPath = false;
-
-    bool bHeadless = false; // --headless: render with no window
-
-    /**
-     * --resolution. Zero in either half leaves the choice to the platform,
-     * which sizes the window from the display it opens on.
-     */
-    Extent2D WindowSize{};
-
-    /**
-     * --borderless / --fullscreen. One field rather than two flags, so that
-     * "borderless and exclusive at once" cannot be represented past parsing.
-     */
-    WindowMode StartWindowMode = WindowMode::Windowed;
-};
-
-/**
  * Whether a frame can be captured from a present target in `format`.
  *
  * A capture is 8-bit RGBA and nothing else, so a 16-bit float target — which
@@ -244,203 +129,11 @@ constexpr bool IsCapturableFormat(Rhi::Format format)
            format == Rhi::Format::RGBA8Srgb;
 }
 
-void PrintUsage()
-{
-    std::cout << "HikariEngine\n"
-                 "\n"
-                 "Usage: HikariEngine [options]\n"
-                 "\n"
-                 "Options:\n";
-
-    // Printed by the engine rather than copied here, so that a second binary
-    // cannot come to describe the same flag differently.
-    Engine::PrintEngineUsage();
-
-    std::cout << "  --screenshot <path>     Write a PNG of the final frame "
-                 "before exiting\n"
-                 "  --report <path>         Write a JSON run report before "
-                 "exiting\n"
-                 "  --resolution <W>x<H>    Start with a window of this size (default: "
-                 "three quarters of\n"
-                 "                          the display)\n"
-                 "  --borderless            Start covering the display as a borderless "
-                 "window\n"
-                 "  --fullscreen            Start in exclusive fullscreen, selecting a "
-                 "display mode\n"
-                 "  --headless              Run without a window, rendering into an "
-                 "offscreen target.\n"
-                 "                          Requires --frames, and cannot be combined with "
-                 "--borderless or --fullscreen\n"
-                 "  --help                  Print this message and exit\n";
-}
-
-[[noreturn]] void ExitWithUsage(int code)
-{
-    PrintUsage();
-    std::exit(code);
-}
-
-/**
- * --borderless and --fullscreen name two different ways of covering the
- * display, so a command line carrying both asks for nothing coherent. Rejected
- * rather than settled by precedence or by order: a launcher passing both is
- * misconfigured, and honouring one of them quietly hides that. Repeating the
- * same flag is not a conflict.
- */
-void RejectConflictingWindowMode(WindowMode current, WindowMode requested, const std::string& flag)
-{
-    if (current == WindowMode::Windowed || current == requested)
-        return;
-
-    LogMsg(LogSeverity::Error, LogMain, "{} cannot be combined with {}", flag,
-           current == WindowMode::BorderlessFullscreen ? "--borderless" : "--fullscreen");
-    ExitWithUsage(EXIT_FAILURE);
-}
-
-std::string GenerateTimestamp()
-{
-    using namespace std::chrono;
-    std::time_t now = system_clock::to_time_t(system_clock::now());
-    std::tm tm{};
-#if defined(_WIN32)
-    localtime_s(&tm, &now);
-#else
-    localtime_r(&now, &tm);
-#endif
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%d_%m_%Y_%H_%M_%S"); // DD_MM_YYYY_HH_mm_SS
-    return oss.str();
-}
-
-AppOptions ParseArgs(int argc, char** argv)
-{
-    AppOptions options;
-
-    try
-    {
-        // Named rather than a temporary in the range-init: Options() hands out
-        // a reference into the CommandLine, which C++20 would not keep alive
-        // for the duration of the loop.
-        const CommandLine commandLine(argc, argv);
-
-        for (const CommandLineOption& option : commandLine.Options())
-        {
-            const std::string& flag = option.Flag;
-
-            // Offered to the engine first: a flag it claims is one this app must
-            // not also answer for, and the order is what guarantees that.
-            if (Engine::ParseEngineOption(option, options.Spec, options.Config))
-                continue;
-
-            if (flag == "--help" || flag == "-h")
-                ExitWithUsage(EXIT_SUCCESS);
-            else if (flag == "--screenshot")
-            {
-                if (option.Value)
-                    options.ScreenshotPath = *option.Value;
-                else
-                    options.bScreenshotAutoPath = true;
-
-                // The engine is asked for pixels; where they land is this app's
-                // business and none of the engine's.
-                options.Spec.bCaptureFinalFrame = true;
-            }
-            else if (flag == "--report")
-            {
-                if (option.Value)
-                    options.ReportPath = *option.Value;
-                else
-                    options.bReportAutoPath = true;
-
-                // Same split as --screenshot: the engine is asked to measure,
-                // and where the numbers land is this app's business.
-                options.Spec.bRecordTimings = true;
-            }
-            else if (flag == "--resolution")
-                options.WindowSize = option.RequireExtent2D();
-            else if (flag == "--borderless")
-            {
-                option.RequireNoValue();
-                RejectConflictingWindowMode(options.StartWindowMode,
-                                            WindowMode::BorderlessFullscreen, flag);
-                options.StartWindowMode = WindowMode::BorderlessFullscreen;
-            }
-            else if (flag == "--fullscreen")
-            {
-                option.RequireNoValue();
-                RejectConflictingWindowMode(options.StartWindowMode,
-                                            WindowMode::ExclusiveFullscreen, flag);
-                options.StartWindowMode = WindowMode::ExclusiveFullscreen;
-            }
-            else if (flag == "--headless")
-            {
-                option.RequireNoValue();
-                options.bHeadless = true;
-            }
-            else
-            {
-                LogMsg(LogSeverity::Error, LogMain, "Unknown option: {}", flag);
-                ExitWithUsage(EXIT_FAILURE);
-            }
-        }
-    }
-    catch (const CommandLineError& e)
-    {
-        LogMsg(LogSeverity::Error, LogMain, "{}", e.what());
-        ExitWithUsage(EXIT_FAILURE);
-    }
-
-    // A window mode for a run with no window asks for nothing coherent.
-    if (options.bHeadless && options.StartWindowMode != WindowMode::Windowed)
-    {
-        LogMsg(LogSeverity::Error, LogMain,
-               "--headless cannot be combined with {}: a run with no window has no window mode",
-               options.StartWindowMode == WindowMode::BorderlessFullscreen ? "--borderless"
-                                                                           : "--fullscreen");
-        ExitWithUsage(EXIT_FAILURE);
-    }
-
-    // Of the frame loop's three exits, two need a window (SDL_EVENT_QUIT and
-    // ImGui's Quit button) and the third is the frame counter, which only fires
-    // when Frames != 0. So a headless run without --frames ends on a signal —
-    // and headless exists for CI, where nobody is there to send one. The job
-    // burns its whole timeout and dies to SIGTERM, which nothing handles, so it
-    // writes neither screenshot nor report.
-    //
-    // Ctrl-C does work interactively (the handler sets g_bShouldClose and the
-    // artefacts are still written), which is what makes an unbounded run
-    // defensible at a terminal — a soak, say. Rejected anyway because the
-    // failure it prevents is silent and expensive in the place this mode is
-    // for, and Frames is a uint64_t if someone really wants to soak.
-    if (options.bHeadless && options.Spec.Frames == 0)
-    {
-        LogMsg(LogSeverity::Error, LogMain,
-               "--headless requires --frames: with no window there is nothing that can end the "
-               "run, so it would render forever and write nothing");
-        ExitWithUsage(EXIT_FAILURE);
-    }
-
-    // Ignore stops errors ever being counted, so --strict-validation would pass
-    // a run that had them. Rejected rather than silently preferred either way:
-    // in CI that combination reads as "validation is enforced" and is not.
-    if (options.Spec.bStrictValidation &&
-        options.Spec.ValidationPolicy == Rhi::ValidationPolicy::Ignore)
-    {
-        LogMsg(LogSeverity::Error, LogMain,
-               "--strict-validation cannot be combined with --validation-policy ignore: "
-               "no errors would be counted for it to act on");
-        ExitWithUsage(EXIT_FAILURE);
-    }
-
-    return options;
-}
-
-// Everything below is the engine itself, which step 46 moves into
-// engine/engine once the src/ types it still reaches for have gone. It is
-// namespaced already because that move is what it is waiting for, and
-// because Hikari::Engine is where its RunSpec and EngineConfig live.
 namespace Hikari::Engine
 {
+
+/** Set by RequestStop(), read by the frame loop. */
+std::atomic<bool> g_bShouldClose = false;
 
 /**
  * Elapsed milliseconds since `start`.
@@ -479,14 +172,14 @@ inline TimingStats ComputeTimingStats(std::vector<float> samples)
                        .Max = samples.back()};
 }
 
-class Engine
+class Engine final : public IEngine
 {
 public:
-    Engine(IPlatform& platform, const Paths& paths, RunSpec spec, EngineConfig config,
-           IJobSystem& jobSystem, Rhi::Diagnostics& diagnostics,
+    Engine(IPlatform& platform, const Paths& paths, IUiBackend* pUiBackend, RunSpec spec,
+           EngineConfig config, IJobSystem& jobSystem, Rhi::Diagnostics& diagnostics,
            std::chrono::steady_clock::time_point processStart)
-        : m_Platform(platform), m_Paths(paths), m_Spec(std::move(spec)), m_Config(config),
-          m_JobSystem(jobSystem), m_Diagnostics(diagnostics),
+        : m_Platform(platform), m_Paths(paths), m_pUiBackend(pUiBackend), m_Spec(std::move(spec)),
+          m_Config(config), m_JobSystem(jobSystem), m_Diagnostics(diagnostics),
           m_RhiDevice(Rhi::CreateDevice(MakeDeviceDesc())),
           m_PhysicalDevice(Rhi::Vulkan::GetPhysicalDevice(*m_RhiDevice)),
           m_Device(Rhi::Vulkan::GetDevice(*m_RhiDevice)),
@@ -508,7 +201,7 @@ public:
         }
     }
 
-    RunResult Run()
+    RunResult Run() override
     {
         Init();
 
@@ -547,7 +240,7 @@ public:
             SDL_Event event;
             while (!m_Platform.IsHeadless() && SDL_PollEvent(&event))
             {
-                ImGui_ImplSDL3_ProcessEvent(&event);
+                m_pUiBackend->ProcessPlatformEvent(&event);
 
                 switch (event.type)
                 {
@@ -662,7 +355,7 @@ private:
 
     void Init()
     {
-        LogMsg(LogSeverity::Info, LogMain, "Init()");
+        LogMsg(LogSeverity::Info, LogEngine, "Init()");
 
         // Started here rather than at construction, so that the world's clock
         // begins when the frame loop is about to, not while the device is still
@@ -727,79 +420,21 @@ private:
             m_Camera->GetTransform().Position += glm::vec3(0.f, 0.f, 10.f);
         }
 
-        LogMsg(LogSeverity::Info, LogMain, "Init() succeeded");
+        LogMsg(LogSeverity::Info, LogEngine, "Init() succeeded");
     }
 
     void InitImGui()
     {
-        LogMsg(LogSeverity::Info, LogImGui, "InitImGui()");
-
-        IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
-
-        ImGuiIO& io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-
-        ImGui::StyleColorsDark();
-
-        const vk::Format swapchainFormat = SwapchainFormat();
-        vk::PipelineRenderingCreateInfo pipelineRenderingInfo = {
-            .colorAttachmentCount = 1u, .pColorAttachmentFormats = &swapchainFormat};
-
-        // The one place that is allowed to hold raw Vulkan handles from the RHI:
-        // ImGui's backend takes them by value and there is no neutral shape for
-        // that, short of wrapping ImGui itself.
-        const Rhi::Vulkan::NativeDevice native = Rhi::Vulkan::GetNative(*m_RhiDevice);
-
-        ImGui_ImplVulkan_InitInfo initInfo = {};
-        initInfo.ApiVersion = native.ApiVersion;
-        initInfo.Instance = native.Instance;
-        initInfo.PhysicalDevice = native.PhysicalDevice;
-        initInfo.Device = native.Device;
-        initInfo.QueueFamily = native.GraphicsQueueFamily;
-        initInfo.Queue = native.GraphicsQueue;
-        initInfo.DescriptorPool = VK_NULL_HANDLE;
-        initInfo.DescriptorPoolSize = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE;
-        // Not the target's image count, for two reasons the backend asserts on
-        // (imgui_impl_vulkan.cpp:1298-1299): MinImageCount must be at least 2,
-        // and ImageCount at least MinImageCount. An offscreen target makes one
-        // image per frame in flight, so a run with one of those has a single
-        // image and would trip both.
-        //
-        // ImageCount sizes ImGui's own vertex/index ring and its unused-texture
-        // delay, nothing shared with the engine's frame count, so giving it more
-        // slots than images costs a little memory and nothing else. Fewer is the
-        // hazard: the ring is reused every ImageCount frames, and a ring shorter
-        // than the frames in flight would be overwritten while an earlier frame
-        // was still reading it.
-        initInfo.MinImageCount = 2u;
-        initInfo.MinAllocationSize = 1024 * 1024;
-        initInfo.ImageCount =
-            std::max({2u, m_PresentTarget->GetImageCount(), m_Config.FramesInFlight});
-        initInfo.UseDynamicRendering = true;
-        initInfo.PipelineCache = Rhi::Vulkan::GetNativePipelineCache(*m_PipelineCache);
-        initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-        initInfo.PipelineInfoMain.PipelineRenderingCreateInfo = pipelineRenderingInfo;
-        initInfo.Allocator = nullptr;
-        initInfo.CheckVkResultFn = nullptr;
-
-        // The platform backend is the only half of ImGui that needs a window.
-        // Skipping it leaves ImGui with no platform backend at all, which is a
-        // supported configuration: what the backend supplies is io.DisplaySize
-        // and io.DeltaTime, and DrawImGuiFrame sets both by hand instead.
-        //
-        // The renderer backend needs nothing from the window system. Everything
-        // surface-shaped in it lives in the optional ImGui_ImplVulkanH_* helper
-        // family, which this app has never called — it records ImGui's draws
-        // into a dynamic-rendering pass of its own, against whatever image the
-        // present target handed back.
-        if (!m_Platform.IsHeadless())
-        {
-            ImGui_ImplSDL3_InitForVulkan(
-                static_cast<SDL_Window*>(m_Platform.GetNativeWindowHandle()));
-        }
-
-        ImGui_ImplVulkan_Init(&initInfo);
+        // The ring has to be at least as long as the frames in flight; the
+        // backend clamps the rest. An offscreen target makes one image per
+        // frame in flight, so its count alone would be too short.
+        m_pUiBackend->Init(UiBackendDesc{
+            .pDevice = m_RhiDevice.get(),
+            .pPipelineCache = m_PipelineCache.get(),
+            .pNativeWindowHandle =
+                m_Platform.IsHeadless() ? nullptr : m_Platform.GetNativeWindowHandle(),
+            .TargetFormat = m_PresentTarget->GetFormat(),
+            .RingSize = std::max(m_PresentTarget->GetImageCount(), m_Config.FramesInFlight)});
     }
 
     /**
@@ -945,7 +580,7 @@ private:
 
         if (!m_bScreenshotBufferReady)
         {
-            LogMsg(LogSeverity::Error, LogMain,
+            LogMsg(LogSeverity::Error, LogEngine,
                    "A capture was asked for without a captured frame. No frame was drawn?");
             return {};
         }
@@ -953,7 +588,7 @@ private:
         const Rhi::Format format = m_PresentTarget->GetFormat();
         if (!IsCapturableFormat(format))
         {
-            LogMsg(LogSeverity::Error, LogMain,
+            LogMsg(LogSeverity::Error, LogEngine,
                    "Cannot capture the final frame: the present target's format is not an 8-bit "
                    "four-channel one, which is all a capture can describe.");
             return {};
@@ -988,7 +623,7 @@ private:
 
     void Shutdown()
     {
-        LogMsg(LogSeverity::Info, LogMain, "Shutdown()");
+        LogMsg(LogSeverity::Info, LogEngine, "Shutdown()");
 
         // Before ImGui, which built pipelines into the same cache, and before
         // the device that owns it goes away.
@@ -1009,10 +644,8 @@ private:
 
     void ShutdownImGui()
     {
-        ImGui_ImplVulkan_Shutdown();
-        if (!m_Platform.IsHeadless())
-            ImGui_ImplSDL3_Shutdown();
-        ImGui::DestroyContext();
+        // The backend owns the context it created, so destroying it is its job.
+        m_pUiBackend->Shutdown();
     }
 
     void HandleMouse(float x, float y)
@@ -1273,7 +906,7 @@ private:
 
     void DrawImGuiFrame()
     {
-        ImGui_ImplVulkan_NewFrame();
+        m_pUiBackend->NewFrame();
         if (m_Platform.IsHeadless())
         {
             // Standing in for the platform backend. DeltaTime is the
@@ -1286,7 +919,6 @@ private:
         }
         else
         {
-            ImGui_ImplSDL3_NewFrame();
         }
 
         ImGui::NewFrame();
@@ -1975,7 +1607,7 @@ private:
         // a frame costs whether or not the panel is drawn, so suppressing the
         // panel alone leaves every counter in the run report untouched.
         if (m_bCursorVisible && !m_Spec.bNoUi)
-            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *cmd);
+            m_pUiBackend->Render(*list);
 
         cmd.endRendering();
         list->End();
@@ -2100,40 +1732,21 @@ private:
                                     static_cast<float>(SwapchainExtent().height),
                                 m_Camera->GetNearPlane(), m_Camera->GetFarPlane());
 
-        const vk::Format swapchainFormat = SwapchainFormat();
-        vk::PipelineRenderingCreateInfo pipelineRenderingInfo{
-            .colorAttachmentCount = 1u, .pColorAttachmentFormats = &swapchainFormat};
-        ImGui_ImplVulkan_PipelineInfo pipelineInfo{};
-        pipelineInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-        pipelineInfo.PipelineRenderingCreateInfo = pipelineRenderingInfo;
-        ImGui_ImplVulkan_CreateMainPipeline(&pipelineInfo);
-
-        // A recreate may hand back a different number of images than the last
-        // one — entering or leaving fullscreen is the usual cause, because the
-        // driver switches between composited and direct presentation. Nothing
-        // this class owns is sized to that count (every per-frame array is as
-        // long as the frames in flight, and the per-image semaphores belong to
-        // the target), but ImGui's Vulkan backend cached it at init, so it is
-        // the one thing that has to be told.
+        // A recreate may hand back a different format or a different number of
+        // images than the last one — entering or leaving fullscreen is the usual
+        // cause, because the driver switches between composited and direct
+        // presentation. Nothing this class owns is sized to that count (every
+        // per-frame array is as long as the frames in flight, and the per-image
+        // semaphores belong to the target), but a UI backend caches both at
+        // init, so it is the one thing that has to be told.
         const uint32_t imageCount = m_PresentTarget->GetImageCount();
         if (imageCount != previousImageCount)
         {
             LogMsg(LogSeverity::Info, LogRenderer, "Swapchain image count changed: {} -> {}",
                    previousImageCount, imageCount);
-
-            // Discards the vertex/index buffer ring the backend built for the
-            // old count. The ring is rebuilt from InitInfo::ImageCount, which
-            // stays at the value Init() was given — ImGui exposes no setter for
-            // it — so it does not track this. That is safe rather than merely
-            // tolerable: the ring is reused once every ImageCount frames, and
-            // InitImGui sized it at or above the frames in flight, so the draw
-            // fence waited on at the top of a frame always covers the frame
-            // whose slot is about to be overwritten.
-            //
-            // Clamped for the same reason InitImGui clamps: the backend asserts
-            // a minimum of 2, which a single-image target would break.
-            ImGui_ImplVulkan_SetMinImageCount(std::max(2u, imageCount));
         }
+
+        m_pUiBackend->OnTargetRecreated(imageCount, m_PresentTarget->GetFormat());
     }
 
     void CreateDescriptorSetLayouts()
@@ -2638,6 +2251,9 @@ private:
      */
     IPlatform& m_Platform;
     const Paths& m_Paths;
+
+    /** The UI stack, built by the app and borrowed for the run. */
+    IUiBackend* m_pUiBackend;
     RunSpec m_Spec;
     EngineConfig m_Config;
     IJobSystem& m_JobSystem;
@@ -2796,304 +2412,26 @@ private:
     bool m_bScreenshotBufferReady = false;
 };
 
+// Anchored here rather than defaulted in their headers, so each vtable has one
+// home rather than one per translation unit that sees the class.
+IEngine::~IEngine() = default;
+IUiBackend::~IUiBackend() = default;
+
+std::unique_ptr<IEngine> CreateEngine(const EngineDesc& desc)
+{
+    return std::make_unique<Engine>(*desc.pPlatform, *desc.pPaths, desc.pUiBackend, desc.Spec,
+                                    desc.Config, *desc.pJobSystem, *desc.pDiagnostics,
+                                    desc.ProcessStart);
+}
+
+void RequestStop()
+{
+    g_bShouldClose = true;
+}
+
+bool StopRequested()
+{
+    return g_bShouldClose;
+}
+
 } // namespace Hikari::Engine
-
-/** Where an auto-pathed capture and report land, relative to the working directory. */
-constexpr const char* kDefaultScreenshotPath = "tests/screenshots/screenshot_";
-constexpr const char* kDefaultReportPath = "tests/reports/report_";
-
-/**
- * The present mode as a JSON value: a quoted name, or null where the target
- * does not present at all, which is what an offscreen run reports.
- */
-std::string PresentModeJson(std::optional<Rhi::PresentMode> mode)
-{
-    if (!mode)
-        return "null";
-
-    switch (*mode)
-    {
-        case Rhi::PresentMode::Immediate:
-            return "\"immediate\"";
-        case Rhi::PresentMode::Mailbox:
-            return "\"mailbox\"";
-        case Rhi::PresentMode::Fifo:
-            return "\"fifo\"";
-        case Rhi::PresentMode::FifoRelaxed:
-            return "\"fifo-relaxed\"";
-    }
-
-    return "null";
-}
-
-/**
- * Serialises a run report to JSON.
- *
- * Three objects rather than one flat list, because they are read differently:
- * everything under "counters" is an expectation that must match exactly,
- * everything under "timings" is a measurement that varies with the machine. A
- * reader cannot tell those apart in a flat object, and a number that looks
- * authoritative and is not is worse than no number. "run" is what makes two
- * reports comparable at all — the same scene at a different resolution, present
- * mode or build configuration is not the same measurement.
- */
-void WriteRunReport(const Engine::RunReport& report, const std::string& path)
-{
-    EnsureParentDirectoryExists(kDefaultReportPath);
-
-    const std::string finalPath = EnsureExtension(path, ".json");
-    std::ofstream file(finalPath);
-    if (!file.is_open())
-    {
-        LogMsg(LogSeverity::Error, LogMain, "Failed to open report file for writing: {}",
-               finalPath);
-        return;
-    }
-
-    const auto stats = [](const Engine::TimingStats& s)
-    {
-        return std::format("{{ \"mean\": {:.4f}, \"p99\": {:.4f}, \"min\": {:.4f}, "
-                           "\"max\": {:.4f} }}",
-                           s.Mean, s.P99, s.Min, s.Max);
-    };
-
-    file << "{\n"
-         << "  \"frames\": " << report.Frames << ",\n"
-         << "  \"counters\": {\n"
-         << "    \"frame\": {\n"
-         << "      \"drawCalls\": " << report.Counters.Frame.DrawCalls << ",\n"
-         << "      \"batches\": " << report.Counters.Frame.Batches << ",\n"
-         << "      \"instances\": " << report.Counters.Frame.Instances << ",\n"
-         << "      \"barriers\": " << report.Counters.Frame.Barriers << ",\n"
-         << "      \"barrierCalls\": " << report.Counters.Frame.BarrierCalls << "\n"
-         << "    },\n"
-         << "    \"run\": {\n"
-         << "      \"validationErrors\": " << report.Counters.Run.ValidationErrors << ",\n"
-         << "      \"validationWarnings\": " << report.Counters.Run.ValidationWarnings << ",\n"
-         << "      \"uploadSubmissions\": " << report.Counters.Run.UploadSubmissions << "\n"
-         << "    }\n"
-         << "  },\n"
-         << "  \"timings\": {\n"
-         << std::format("    \"startupMs\": {:.4f},\n", report.Timings.StartupMs)
-         << std::format("    \"firstFrame\": {{ \"frameMs\": {:.4f}, \"cpuMs\": {:.4f} }},\n",
-                        report.Timings.FirstFrame.FrameMs, report.Timings.FirstFrame.CpuMs)
-         << "    \"frameMs\": " << stats(report.Timings.FrameMs) << ",\n"
-         << "    \"cpuMs\": " << stats(report.Timings.CpuMs) << "\n"
-         << "  },\n"
-         << "  \"run\": {\n"
-         << "    \"fixedDt\": " << (report.Run.bFixedDt ? "true" : "false") << ",\n"
-         << "    \"headless\": " << (report.Run.bHeadless ? "true" : "false") << ",\n"
-         << "    \"noUi\": " << (report.Run.bNoUi ? "true" : "false") << ",\n"
-         << "    \"width\": " << report.Run.Width << ",\n"
-         << "    \"height\": " << report.Run.Height << ",\n"
-         << "    \"jobCount\": " << report.Run.JobCount << ",\n"
-         << "    \"presentMode\": " << PresentModeJson(report.Run.PresentMode) << ",\n"
-         << "    \"buildConfig\": \"" << report.Run.BuildConfig << "\"\n"
-         << "  }\n"
-         << "}\n";
-    file.close();
-
-    LogMsg(LogSeverity::Info, LogMain, "Wrote report to {}", finalPath);
-}
-
-/** Writes a captured frame out as a PNG. The pixels arrive as 8-bit RGBA. */
-void WriteCapturePng(const Engine::CapturedFrame& capture, const std::string& path)
-{
-    EnsureParentDirectoryExists(kDefaultScreenshotPath);
-
-    if (capture.IsEmpty())
-    {
-        LogMsg(LogSeverity::Error, LogMain, "No frame was captured, so no screenshot was written.");
-        return;
-    }
-
-    const std::string finalPath = EnsureExtension(path, ".png");
-    const int width = static_cast<int>(capture.Extent.Width);
-    const int height = static_cast<int>(capture.Extent.Height);
-    const int writeResult =
-        stbi_write_png(finalPath.c_str(), width, height, 4, capture.Pixels.data(), width * 4);
-
-    if (writeResult == 0)
-    {
-        LogMsg(LogSeverity::Error, LogMain, "Failed to write screenshot to {}", finalPath);
-    }
-    else
-    {
-        LogMsg(LogSeverity::Info, LogMain, "Wrote screenshot to {}", finalPath);
-    }
-}
-
-int main(int argc, char** argv)
-{
-    // First statement in the process, so that startupMs in the run report
-    // covers argument parsing and window creation as well as device setup —
-    // which is where a windowed and a headless run differ most.
-    const auto processStart = std::chrono::steady_clock::now();
-
-#ifdef _WIN32
-    EnableAnsiColors();
-#endif
-    // Both signals that mean "stop": Ctrl-C, and the SIGTERM a CI runner sends
-    // when a job outlives its timeout. Without the second, a timed-out run is
-    // killed with its screenshot and report unwritten — the two things anyone
-    // diagnosing the timeout would want.
-    std::signal(SIGINT, HandleTerminationSignal);
-    std::signal(SIGTERM, HandleTerminationSignal);
-
-    Log::g_MinSeverity = LogSeverity::Info;
-
-    AppOptions options = ParseArgs(argc, argv);
-
-    // Declared before the engine so that it outlives the device reporting into
-    // it, and
-    // so its counters are still readable for the --strict-validation
-    // check below, which runs after everything has been torn down.
-    Rhi::Diagnostics diagnostics(
-        Rhi::Diagnostics::Desc{.Policy = options.Spec.ValidationPolicy,
-                               .MinSeverity = Rhi::DiagnosticSeverity::Info,
-                               .OnMessage = &HandleRhiDiagnostic});
-
-    // will be destroyed in reverse order of declaration. The platform must
-    // outlive the engine: destroying it unloads the Vulkan library.
-    //
-    // IPlatform rather than SdlPlatform because which implementation this is
-    // depends on --headless. SdlPlatform::ShowErrorMessageBox is static, so the
-    // SDLException handler below still works without an instance.
-    std::unique_ptr<IPlatform> pPlatform = nullptr;
-    std::unique_ptr<Paths> pPaths = nullptr;
-    std::unique_ptr<IJobSystem> pJobSystem = nullptr;
-    std::unique_ptr<Engine::Engine> pEngine = nullptr;
-
-    try
-    {
-        const WindowDesc windowDesc{.Width = options.WindowSize.Width,
-                                    .Height = options.WindowSize.Height};
-
-        // One description, either implementation. A zero size means "you
-        // decide" to both of them: SdlPlatform asks the display, and
-        // HeadlessPlatform, having none, uses its documented constant.
-        if (options.bHeadless)
-            pPlatform = std::make_unique<HeadlessPlatform>(windowDesc);
-        else
-            pPlatform = std::make_unique<SdlPlatform>(windowDesc);
-
-        // Before the device, so that the first swapchain is built at the size
-        // the window ends up rather than at the windowed one. Where the
-        // transition is asynchronous the resize still arrives late, as a
-        // resize event, which costs one recreation and nothing else.
-        //
-        // Unreachable headless: --headless with a window-mode flag is rejected
-        // during parsing, so this is always Windowed there.
-        if (options.StartWindowMode != WindowMode::Windowed)
-            pPlatform->SetWindowMode(options.StartWindowMode);
-
-        if (options.Spec.JobCount == 0)
-        {
-            LogMsg(LogSeverity::Info, LogMain,
-                   "JobSystem selected: SerialJobSystem (no worker threads)");
-            pJobSystem = std::make_unique<SerialJobSystem>();
-        }
-        else if (options.Spec.JobCount > 0)
-        {
-            pJobSystem = std::make_unique<SharedQueueJobSystem>(
-                static_cast<uint32_t>(options.Spec.JobCount));
-            LogMsg(LogSeverity::Info, LogMain,
-                   "JobSystem selected: SharedQueueJobSystem ({} worker threads)",
-                   pJobSystem->WorkerCount());
-        }
-        else
-        {
-            pJobSystem = std::make_unique<SharedQueueJobSystem>();
-            LogMsg(LogSeverity::Info, LogMain,
-                   "JobSystem selected: SharedQueueJobSystem ({} worker threads)",
-                   pJobSystem->WorkerCount());
-        }
-
-        pPaths = std::make_unique<Paths>(options.Spec.ContentRoot);
-
-        pEngine =
-            std::make_unique<Engine::Engine>(*pPlatform, *pPaths, options.Spec, options.Config,
-                                             *pJobSystem, diagnostics, processStart);
-        const Engine::RunResult result = pEngine->Run();
-
-        // One stamp for both files, taken when the first is written and reused
-        // by the second, so that a screenshot and the report describing the same
-        // moment share a name — asking the clock twice puts them a second apart
-        // whenever the two writes straddle a second boundary.
-        std::string captureStamp;
-        const auto stamp = [&captureStamp]() -> const std::string&
-        {
-            if (captureStamp.empty())
-                captureStamp = GenerateTimestamp();
-
-            return captureStamp;
-        };
-
-        if (options.Spec.bCaptureFinalFrame)
-        {
-            WriteCapturePng(result.Capture, options.bScreenshotAutoPath
-                                                ? kDefaultScreenshotPath + stamp()
-                                                : options.ScreenshotPath);
-        }
-
-        if (!options.ReportPath.empty() || options.bReportAutoPath)
-        {
-            WriteRunReport(result.Report, options.bReportAutoPath ? kDefaultReportPath + stamp()
-                                                                  : options.ReportPath);
-        }
-    }
-    catch (const SDLException& e)
-    {
-        SdlPlatform::ShowErrorMessageBox("SDL Error", e.what());
-        LogMsg(LogSeverity::Error, LogSDL, "{}", e.what());
-        return EXIT_FAILURE;
-    }
-    catch (const vk::SystemError& e)
-    {
-        LogMsg(LogSeverity::Error, LogMain, "Vulkan error: {}", e.what());
-        return EXIT_FAILURE;
-    }
-    catch (const std::exception& e)
-    {
-        LogMsg(LogSeverity::Error, LogMain, "Error: {}", e.what());
-        return EXIT_FAILURE;
-    }
-
-    pEngine.reset();
-    pJobSystem.reset();
-    pPaths.reset();
-    pPlatform.reset();
-
-    // Everything above is destroyed by this point, so this covers teardown
-    // messages too — which is where the interesting ones tend to be, since a
-    // resource freed while still in use is only detectable at destruction.
-    const uint64_t validationErrors = diagnostics.ErrorCount();
-    const uint64_t validationWarnings = diagnostics.WarningCount();
-
-    if (validationErrors > 0 || validationWarnings > 0)
-    {
-        LogMsg(LogSeverity::Warning, LogDiagnostics, "{} error(s), {} warning(s)", validationErrors,
-               validationWarnings);
-
-        const std::vector<std::string> recent = diagnostics.RecentMessages();
-        const uint64_t dropped = diagnostics.DroppedMessageCount();
-        if (dropped > 0)
-            LogMsg(LogSeverity::Warning, LogDiagnostics,
-                   "  last {} message(s), {} earlier one(s) dropped:", recent.size(), dropped);
-        else
-            LogMsg(LogSeverity::Warning, LogDiagnostics, "  {} message(s):", recent.size());
-
-        for (const std::string& message : recent)
-            LogMsg(LogSeverity::Warning, LogDiagnostics, "    {}", message);
-    }
-
-    if (options.Spec.bStrictValidation && validationErrors > 0)
-    {
-        LogMsg(LogSeverity::Error, LogDiagnostics,
-               "Strict validation failed: {} validation error(s) occurred", validationErrors);
-        return EXIT_FAILURE;
-    }
-
-    LogMsg(LogSeverity::Info, LogMain, "Exiting gracefully...");
-    return EXIT_SUCCESS;
-}

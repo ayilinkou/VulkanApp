@@ -28,7 +28,7 @@ format, `HeadlessPlatform`'s queue) out of the way until then.
 
 ## Cross-cutting
 
-**A module is created only where a step's own deliverable is that module's type.** `engine/assets`
+**A module is created only where a step's own deliverable is that module's type.** `engine/asset`
 appears at step 42 because `AssetRegistry` is an assets type; `engine/editor` at 46 because the
 editor is. Renderer internals stay in `engine/engine` until Stage 8 draws the Render/Scene boundary
 deliberately — moving them earlier would be drawing that boundary by accident.
@@ -50,7 +50,7 @@ deliberately — moving them earlier would be drawing that boundary by accident.
 - **`Engine::Run` returns data and writes nothing** — a `RunReport` plus a `CapturedFrame`. The apps
   write files. `RunSpec` therefore carries `bCaptureFinalFrame`, not paths: a test that wants the
   pixels should not have to give the engine a filename and read them back off disk.
-- **`WriteRunReport` lives in `engine/engine`; image encoding in `engine/assets`**, which already
+- **`WriteRunReport` lives in `engine/engine`; image encoding in `engine/asset`**, which already
   owns stb for decoding. Both stay in `src/main.cpp` until the step that moves them.
 - **`EngineConfig` is a construction-time input, separate from `RunSpec`.** Its values size GPU
   resources once, at startup, where `RunSpec`'s describe a run. Only `--frames-in-flight` gets a
@@ -75,7 +75,7 @@ deliberately — moving them earlier would be drawing that boundary by accident.
   `ResourceManager` without `Get()` — still path-keyed, still owning the loaders. The
   `AssetId`/`*Data` redesign is Stage 9's, and doing it here would hide a dependency-injection
   change inside a data-model change. *Landed with the registry still in `src/` — see the
-  architecture plan's §42 note; `engine/assets` was created holding `AssetCache`.*
+  architecture plan's §42 note; `engine/asset` was created holding `AssetCache`.*
 - **`LoadScope`'s batching invariant must survive the move.** Injecting an `IUploadContext&` into
   each loader would undo it silently — every loader would flush its own uploads and the batching
   would be gone with nothing failing.
@@ -94,7 +94,7 @@ deliberately — moving them earlier would be drawing that boundary by accident.
   `CreatePBRMaterial` while loading, and `main.cpp:1601` and `:1660` call
   `GetDescriptorSetLayout()` to build the opaque and transparent pipeline layouts. A descriptor set
   layout is a renderer input, and registry ownership would make the asset layer the thing that
-  hands it out — putting a `vk::DescriptorSetLayout` on `engine/assets`' public surface and adding
+  hands it out — putting a `vk::DescriptorSetLayout` on `engine/asset`' public surface and adding
   an `rhi/vulkan/` allowlist entry to a module that otherwise needs none. That list is a ratchet
   meant to shrink.
 - **It stays in `src/`.** It is not an assets type, so nothing about this step requires it to move;
@@ -145,6 +145,9 @@ deliberately — moving them earlier would be drawing that boundary by accident.
   already has `InitForVulkan`, `InitForD3D` and `InitForOther`.
 - **The pixel comparison still passes `--no-ui` on both sides**, for the reason step 46 already
   gives: a windowed run carries a hover highlight that no headless run can reproduce.
+- *Landed. `--resolution` stayed on both binaries — for the editor it sizes a window, for the
+  headless one the offscreen target, and a like-for-like pixel comparison needs both to be the
+  same size. See the architecture plan's §46 note for the rest.*
 
 ## 47. Wire headless tests into CI
 

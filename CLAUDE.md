@@ -211,9 +211,13 @@ debug-linux build for clangd.
 Asset paths resolve against a content root, not the CWD, so the app runs from anywhere:
 
 ```bash
-./build/ninja-debug-linux/HikariEngine --scene scenes/test_scene.map   # content-relative
-./build/ninja-debug-linux/HikariEngine --content /path/to/content      # explicit root
-./build/ninja-debug-linux/HikariEngine --help
+./build/ninja-debug-linux/HikariEditor --scene scenes/test_scene.map   # content-relative
+./build/ninja-debug-linux/HikariEditor --content /path/to/content      # explicit root
+./build/ninja-debug-linux/HikariEditor --help
+
+# The same engine with no window, rendering into an offscreen target. --frames
+# is required: nothing else can end the run.
+./build/ninja-debug-linux/HikariHeadless --frames 100 --screenshot --report
 ```
 
 `Paths` (in `engine/platform`) resolves the root in priority order: `--content` →
@@ -263,24 +267,27 @@ the committed `tests/baseline/`. Two signals, and **both are usable**:
 request the window system may refuse, and a tiling compositor always does. The rationale is
 in the script, next to the flags.
 
-`--headless` renders into an offscreen target with no window at all. It requires
-`--frames` — nothing else can end the run — and cannot be combined with `--borderless` or
-`--fullscreen`. ImGui still draws, so a headless capture and a windowed one of the same frame
-come out pixel-identical.
+`HikariHeadless` renders into an offscreen target with no window at all. It requires
+`--frames` — nothing else can end the run — and takes `--resolution` for the target's extent
+rather than a window's. It has no window-mode flags, because the binary *is* the mode: the
+`--headless` flag it replaced existed only so one binary could refuse its own options. The UI
+still draws, so a headless capture and an editor one of the same frame come out
+pixel-identical — verified at step 46 and the thing step 47's CI tests rest on.
 
 ---
 
 ## Repository layout
 
 ```
-src/             # the application — one class per file, plus main.cpp (App + everything unmoved)
-src/shaders/     # Slang source (.slang, .slangh); compiled to <exe dir>/shaders/*.spv
+apps/editor/     # HikariEditor — SDL window, the UI attached, one main.cpp
+apps/headless/   # HikariHeadless — no window, offscreen target, one main.cpp
 engine/core/     # Engine::Core static lib — Log, Timer, MyMacros, SwapbackArray,
                  #   ThreadPool, IJobSystem + SerialJobSystem + SharedQueueJobSystem,
                  #   Handle + HandlePool, Extent2D + Extent3D (one definition, used
                  #   by Platform and the RHI alike).
 engine/platform/ # Engine::Platform static lib — IPlatform/SdlPlatform, Paths, FileSystem,
                  #   CommandLine
+engine/asset/   # Engine::Asset static lib — AssetCache, PNG encoding
 engine/rhi/      # Engine::RHI static lib — the graphics abstraction.
                  #   include/rhi/         backend-neutral: IDevice, ICommandList, barriers,
                  #                        handles, descs, IUploadContext, IPipelineCache
@@ -288,6 +295,16 @@ engine/rhi/      # Engine::RHI static lib — the graphics abstraction.
                  #                        the native escape hatch plus what Stages 6-8 have
                  #                        not taken over yet. Frozen; see below.
                  #   src/vulkan/          the backend. Invisible outside the module.
+engine/engine/   # Engine::Engine static lib — the engine, and everything not yet split out.
+                 #   include/engine/      what an app sees: IEngine, RunApp, RunSpec,
+                 #                        EngineConfig, RunReport, IUiBackend
+                 #   src/                 the renderer, the scene and the asset types, private
+                 #                        to the module until Stage 8 promotes them into
+                 #                        Render and Scene modules of their own
+                 #   src/shaders/         Slang source (.slang, .slangh); compiled to
+                 #                        <exe dir>/shaders/*.spv
+engine/editor/   # Engine::Editor static lib — the UI stack. Above Engine: an app builds
+                 #   VulkanUiBackend and hands it over as an IUiBackend
 cmake/           # EngineModule.cmake (engine_module), Testing.cmake (engine_test),
                  #   HeaderSelfContainment.cmake, Warnings.cmake
 tests/unit/      # Catch2 tests, CTest label "unit" — no GPU, run by CI
@@ -300,7 +317,8 @@ content/         # runtime content root — models/ scenes/ textures/ shaders/ (
 
 Source lists are explicit, not globbed — a new `.cpp` will silently not build if you forget:
 
-- `src/*.cpp` → append to `SOURCES` in the root `CMakeLists.txt`.
+- `engine/engine/src/*.cpp` → append to `engine_module(Engine SOURCES ...)`, like any other
+  module. There is no application source list any more: each app is one `main.cpp`.
 - `engine/<module>/src/*.cpp` → append to that module's `engine_module(<Name> SOURCES ...)`
   call in `engine/<module>/CMakeLists.txt`.
 - `tests/unit/**/*.cpp` → append to the matching `engine_test(...)` call in
@@ -347,7 +365,7 @@ Two non-obvious rules that the whole test strategy rests on:
 under `engine/rhi/include/rhi/` may name a Vulkan or VMA type; the backend lives in
 `engine/rhi/src/vulkan/`, where nothing outside the module can reach it. The one exception is
 `engine/rhi/include/rhi/vulkan/`, which is *frozen*: seven headers covering what Stages 6–8
-have not taken over yet, and sixteen allowlisted include sites outside the module. Adding
+have not taken over yet, and eighteen allowlisted include sites outside the module. Adding
 either fails `rhi_boundary_check`, and so does leaving an allowlist entry behind after its
 include goes — the list is meant to shrink to nothing. New entries are argued for in
 `cmake/RhiBoundaryCheck.cmake`, next to the reason each existing one is still there.

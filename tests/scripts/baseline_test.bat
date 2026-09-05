@@ -28,7 +28,7 @@ REM cursor at startup, so the panel carries a hover highlight on whichever widge
 REM the mouse was last over. It has been stable in practice only because the mouse
 REM did not move between runs. ImGui still initialises and its pass still records,
 REM so the counters in the report are unaffected by the flag.
-build\%PRESET%\HikariEngine.exe --report --screenshot --frames --fixed-dt --scene --camera-preset 1 ^
+build\%PRESET%\HikariEditor.exe --report --screenshot --frames --fixed-dt --scene --camera-preset 1 ^
     --resolution 1920x1080 --borderless --no-ui
 if errorlevel 1 exit /b %errorlevel%
 

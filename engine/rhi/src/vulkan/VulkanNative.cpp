@@ -83,6 +83,11 @@ std::unique_ptr<ICommandList> WrapCommandList(IDevice& device, vk::CommandBuffer
     return std::make_unique<VulkanCommandList>(AsVulkan(device), cmd);
 }
 
+vk::CommandBuffer GetNative(ICommandList& commandList)
+{
+    return static_cast<VulkanCommandList&>(commandList).Native();
+}
+
 vk::Format GetNativeFormat(Format format)
 {
     return ToVk(format);

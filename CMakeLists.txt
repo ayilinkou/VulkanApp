@@ -138,6 +138,26 @@ else()
   )
 endif()
 
+# Where the executable lands, and — via cmake/Shaders.cmake — the shaders it
+# loads. Both are derived from this one variable so that they cannot drift
+# apart: Paths looks for shaders beside the executable, and a mismatch would
+# only show up at runtime.
+#
+# Multi-configuration generators build every configuration out of a single
+# build tree, so the configuration has to be part of the path there; the Ninja
+# presets already get one build tree per configuration. Spelling the
+# configuration out with a generator expression rather than letting CMake
+# append it is what keeps the value here equal to the value Shaders.cmake uses
+# — the automatic append happens to the target property only.
+get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(is_multi_config)
+  set(HIKARI_EXE_DIR ${CMAKE_BINARY_DIR}/$<CONFIG>)
+else()
+  set(HIKARI_EXE_DIR ${CMAKE_BINARY_DIR})
+endif()
+
+include(cmake/Shaders.cmake)
+
 if(ENGINE_BUILD_TESTS)
   enable_testing()
   find_package(Catch2 CONFIG REQUIRED)
@@ -187,26 +207,7 @@ engine_header_self_containment(
   # standalone.
   HIKARI_BUILD_CONFIG="$<LOWER_CASE:$<CONFIG>>$<$<BOOL:${ENABLE_SANITIZERS}>:+asan>")
 
-# Where the executable lands, and — via cmake/Shaders.cmake — the shaders it
-# loads. Both are derived from this one variable so that they cannot drift
-# apart: Paths looks for shaders beside the executable, and a mismatch would
-# only show up at runtime.
-#
-# Multi-configuration generators build every configuration out of a single
-# build tree, so the configuration has to be part of the path there; the Ninja
-# presets already get one build tree per configuration. Spelling the
-# configuration out with a generator expression rather than letting CMake
-# append it is what keeps the value here equal to the value Shaders.cmake uses
-# — the automatic append happens to the target property only.
-get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
-if(is_multi_config)
-  set(HIKARI_EXE_DIR ${CMAKE_BINARY_DIR}/$<CONFIG>)
-else()
-  set(HIKARI_EXE_DIR ${CMAKE_BINARY_DIR})
-endif()
 
-
-include(cmake/Shaders.cmake)
 
 add_subdirectory(apps)
 

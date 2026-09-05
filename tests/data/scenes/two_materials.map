@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!-- One opaque cube and one transparent one: two materials, so two batches that
+     cannot merge, and both surface pipelines drawing in the same frame. -->
+<scene>
+	<entity name="DirLight">
+		<transform position="0 0 0" rotation="0 0 0" scale="1 1 1" />
+		<light type="1" intensity="5" direction="0.5 -1 0.5" />
+	</entity>
+	<entity name="OpaqueCube">
+		<transform position="-1 0 0" rotation="0 0 0" scale="1 1 1" />
+		<model path="models/cube.gltf">
+			<transform position="0 0 0" rotation="0 0 0" scale="1 1 1" />
+		</model>
+	</entity>
+	<entity name="TransparentCube">
+		<transform position="1 0 0" rotation="0 0 0" scale="1 1 1" />
+		<model path="models/cube_transparent.gltf">
+			<transform position="0 0 0" rotation="0 0 0" scale="1 1 1" />
+		</model>
+	</entity>
+</scene>

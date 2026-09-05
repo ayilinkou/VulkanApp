@@ -203,6 +203,12 @@ public:
 
     RunResult Run() override
     {
+        // A process may run the engine more than once — the scene tests run it
+        // once per case — and the stop flag is a global because a signal handler
+        // has to be able to set it. Left over from a previous run it would end
+        // this one before its first frame.
+        g_bShouldClose = false;
+
         Init();
 
         m_Platform.Show();
@@ -398,7 +404,18 @@ private:
         createInfo.FrontPath = skyboxFace("front.jpg");
         createInfo.BackPath = skyboxFace("back.jpg");
 
-        m_Skybox = m_Assets->LoadCubemap(createInfo);
+        // Logged and skipped rather than fatal, which is what the error convention
+        // asks of asset loading: nothing renders the skybox yet, so a content
+        // root without one is a scene that looks unfinished rather than a run
+        // that cannot start.
+        try
+        {
+            m_Skybox = m_Assets->LoadCubemap(createInfo);
+        }
+        catch (const std::exception& error)
+        {
+            LogMsg(LogSeverity::Warning, LogEngine, "Skybox not loaded: {}", error.what());
+        }
 
         m_Camera = std::make_unique<Camera>();
 
@@ -917,9 +934,6 @@ private:
                                     static_cast<float>(SwapchainExtent().height));
             io.DeltaTime = m_DeltaTime;
         }
-        else
-        {
-        }
 
         ImGui::NewFrame();
 
@@ -1396,22 +1410,20 @@ private:
         cmd.bindVertexBuffers(1, Rhi::Vulkan::GetBuffer(*m_RhiDevice, frame.InstanceBuffer.Get()),
                               {0});
 
-        vk::CullModeFlags cullMode = vk::CullModeFlagBits::eBack;
-
         // per mesh batch
         const std::vector<MeshBatch>& batches = m_ModelManager.GetOpaqueBatches();
         uint32_t instanceCount = 0;
         for (const MeshBatch& batch : batches)
         {
-            vk::CullModeFlags requiredCullMode = batch.pMaterial->IsTwoSided()
-                                                     ? vk::CullModeFlagBits::eNone
-                                                     : vk::CullModeFlagBits::eBack;
-
-            if (requiredCullMode != cullMode)
-            {
-                cmd.setCullMode(requiredCullMode);
-                cullMode = requiredCullMode;
-            }
+            // Set every batch rather than tracked and skipped when unchanged. A
+            // command buffer starts with no dynamic cull mode at all, so anything
+            // that skips the first set leaves the draw invalid
+            // (VUID-vkCmdDrawIndexed-None-07840) — which is what the previous
+            // version did for a single-sided material, and what every material
+            // shipped today being two-sided hid. Recording one more state token
+            // per batch is not worth a rule about when it may be skipped.
+            cmd.setCullMode(batch.pMaterial->IsTwoSided() ? vk::CullModeFlagBits::eNone
+                                                          : vk::CullModeFlagBits::eBack);
 
             cmd.bindVertexBuffers(0, Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.VertexBuffer), {0});
             cmd.bindIndexBuffer(Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.IndexBuffer), 0,

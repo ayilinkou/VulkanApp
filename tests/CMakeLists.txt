@@ -46,3 +46,30 @@ engine_test(rhi_gpu_tests SOURCES gpu/rhi/DeviceTests.cpp
 target_include_directories(
   rhi_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/support
                         ${CMAKE_SOURCE_DIR}/engine/rhi/src)
+
+# The scene matrix: real runs of the engine, headless, asserting on the RunReport
+# they return. Labelled "scene" rather than "gpu" so that ctest -L gpu keeps its
+# under-a-minute meaning and a red step says which kind of thing broke.
+engine_test(scene_tests SOURCES scene/SceneLaunchTests.cpp LIBS Engine::Engine
+            Engine::Editor LABEL scene)
+
+# Beside the shaders rather than in tests/: the engine loads them from its own
+# directory, so a test that runs the engine has to live where a binary does.
+set_target_properties(scene_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                                             ${HIKARI_EXE_DIR})
+add_dependencies(scene_tests CompileShadersTarget)
+
+target_include_directories(scene_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/support)
+
+target_compile_definitions(
+  scene_tests
+  PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/"
+          # The shipped scene is loaded from the repository's own content root,
+          # which is the point of that case: it is the only one testing geometry
+          # anybody actually ships.
+          HIKARI_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content/"
+          # The smoke case launches the real binary, so it needs to know where
+          # the build put it.
+          HIKARI_HEADLESS_BINARY="$<TARGET_FILE:HikariHeadless>")
+
+add_dependencies(scene_tests HikariHeadless)

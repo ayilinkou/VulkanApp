@@ -2633,6 +2633,36 @@ and a real-content one.
 - **Verify:** **CI is green with a headless scene launched and asserted under ASan.**
   Deliberately break a barrier in a PR and confirm CI catches it.
 - **Size:** L · **Needs:** 39, 46
+- **Landed (2026-09-05), as `stage7_plan.md` specified it.** Eight cases under a new `scene`
+  CTest label, in `tests/scene/SceneLaunchTests.cpp`: seven run the engine **in-process** —
+  `CreateEngine`, `Run`, assert on the returned `RunReport`, no file and no JSON parser — and
+  one launches the real `HikariHeadless` with `--strict-validation` to cover argument parsing,
+  the platform and UI it builds, and the files it writes. Every in-process case runs its scene
+  **twice and compares** the counters and the captured pixels, which is the determinism check;
+  the panel is suppressed with `bNoUi` because it prints the frame time and the FPS, and the
+  pass still records either way, so the counters remain those of a shipping frame. Test data is
+  `tests/data/` as its own content root: two hand-authored ~2.7 KB glTF cubes with the buffer
+  base64-embedded, and six scenes built from them, plus one case running the shipped
+  `content/scenes/test_scene.map`. CI installs `mesa-vulkan-drivers` and pins lavapipe with
+  `VK_DRIVER_FILES`; `ctest -L gpu` runs in all three Linux jobs and `ctest -L scene` in the
+  debug and ASan ones.
+- **Two defects the suite found on its first run, both fixed here:**
+  - **The dynamic cull mode was never set for a single-sided material.** The opaque recorder
+    tracked it starting from an assumed `eBack`, but a command buffer begins with no dynamic
+    cull mode at all, so a batch that wanted `eBack` never called `vkCmdSetCullMode` and its
+    draw was invalid (`VUID-vkCmdDrawIndexed-None-07840`). Every material shipped today is
+    two-sided, which is exactly why nothing had noticed: the first batch wanted `eNone`, which
+    differed from the assumption and so was set. Now set unconditionally per batch: one extra
+    state token per batch costs nothing measurable, and it removes the rule about when the set
+    may be skipped along with the bug that rule caused.
+  - **The stop flag survived a run.** `g_bShouldClose` is a global because a signal handler has
+    to reach it, and nothing reset it, so a second `Engine::Run` in one process ended before
+    its first frame. Invisible to a binary that runs the engine once; fatal to a test that runs
+    it eight times. `Run` now clears it on entry.
+  - Also made non-fatal: a missing skybox cubemap, which threw and killed the run. The error
+    convention asks asset loading to log and skip, nothing renders the skybox yet, and a
+    content root without one is now a scene that looks unfinished rather than a run that cannot
+    start.
 
 > ### 🎯 Checkpoint: stated goal complete
 > CI now builds on 3 platforms, runs unit tests everywhere, and launches real scenes headless

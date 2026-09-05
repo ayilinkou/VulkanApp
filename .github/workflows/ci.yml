@@ -143,7 +143,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxcb1-dev libx11-dev libxext-dev libxrandr-dev libwayland-dev \
             libxcursor-dev libxi-dev libxfixes-dev libxtst-dev \
-            autoconf autoconf-archive automake libtool libltdl-dev
+            autoconf autoconf-archive automake libtool libltdl-dev \
+            mesa-vulkan-drivers
 
       # vcpkg creates this itself when it first writes a zip, but the save step
       # below runs even when the job failed early, and actions/cache fails on a
@@ -244,14 +245,47 @@ jobs:
         continue-on-error: true
         run: ctest --test-dir build/${{ matrix.preset }} -L unit --output-on-failure
 
+      # lavapipe, pinned rather than discovered: enumeration order is not a
+      # stable identifier, and a runner that grows a second ICD should not
+      # silently change what these tests ran against.
+      #
+      # The gpu label runs in all three Linux jobs, release included, because
+      # tests/support/RhiTestFixture.h enables validation unconditionally — so a
+      # release run asserts everything a debug one does, and release is the only
+      # structurally different configuration in the matrix (asan inherits debug).
+      - name: GPU tests (lavapipe)
+        id: gpu-tests
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        env:
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: ctest --test-dir build/${{ matrix.preset }} -L gpu --output-on-failure
+
+      # The scene matrix launches real frames and asserts on the report they
+      # produce. Debug and ASan only: the engine gates validation on NDEBUG, so a
+      # release run would report zero validation errors trivially and make the
+      # headline assertion theatre. Promoting it is a two-line change once
+      # validation is runtime-selectable (backlog.md).
+      - name: Scene tests (lavapipe)
+        id: scene-tests
+        if: matrix.preset == 'ninja-debug-linux' || matrix.preset == 'ninja-asan-linux'
+        continue-on-error: true
+        env:
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: ctest --test-dir build/${{ matrix.preset }} -L scene --output-on-failure
+
       # header-check reports "skipped" in the four non-debug jobs, which is not a
       # failure and so passes this gate.
       - name: Fail if any check failed
-        if: steps.header-check.outcome == 'failure' || steps.catch2-tests.outcome == 'failure'
+        if: steps.header-check.outcome == 'failure' || steps.catch2-tests.outcome ==
+          'failure' || steps.gpu-tests.outcome == 'failure' || steps.scene-tests.outcome ==
+          'failure'
         run: |
           echo "One or more checks failed:"
           echo "  Header self-containment: ${{ steps.header-check.outcome }}"
           echo "  Catch2 tests: ${{ steps.catch2-tests.outcome }}"
+          echo "  GPU tests: ${{ steps.gpu-tests.outcome }}"
+          echo "  Scene tests: ${{ steps.scene-tests.outcome }}"
           exit 1
 
       # Unconditional, because this run's key is its own and cannot collide with

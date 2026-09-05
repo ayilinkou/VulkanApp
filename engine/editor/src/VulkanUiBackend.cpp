@@ -111,7 +111,15 @@ void VulkanUiBackend::NewFrame()
 
 void VulkanUiBackend::Render(Rhi::ICommandList& commandList)
 {
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), Rhi::Vulkan::GetNative(commandList));
+    // Null when nothing built a UI frame — an extra frame drawn purely to stage
+    // a capture, say. The caller's rendering scope still opens and closes, so
+    // the pass costs what it always does; there is simply nothing to draw into
+    // it.
+    ImDrawData* pDrawData = ImGui::GetDrawData();
+    if (pDrawData == nullptr)
+        return;
+
+    ImGui_ImplVulkan_RenderDrawData(pDrawData, Rhi::Vulkan::GetNative(commandList));
 }
 
 void VulkanUiBackend::OnTargetRecreated(uint32_t imageCount, Rhi::Format targetFormat)

@@ -201,6 +201,14 @@ configured tree. `HeaderSelfContainment` runs in the debug job of each OS, becau
 run in all six. `precommit.sh` runs the same set locally in one sequence, so its ordering no
 longer mirrors CI's job layout.
 
+**The GPU and scene tests run on Linux against lavapipe**, pinned with `VK_DRIVER_FILES`
+rather than discovered — enumeration order is not a stable identifier. `ctest -L gpu` runs in
+all three Linux jobs including release, because `RhiTestFixture.h` enables validation
+unconditionally, so a release run asserts everything a debug one does. `ctest -L scene` runs
+in the debug and ASan jobs only: the engine gates validation on `NDEBUG`, so a release run
+would report zero validation errors trivially. Promoting it is a two-line change once
+validation is runtime-selectable (`backlog.md`).
+
 Everything that *verifies* the tree lives in `tests/scripts/`; `scripts/` holds the things
 that build or change it (`build.sh` at the root, `format.sh`, `precommit.sh`, and the
 Windows-only `envsetup.bat`). Each script has a `.bat` equivalent beside it. Scripts resolve
@@ -308,7 +316,12 @@ engine/editor/   # Engine::Editor static lib — the UI stack. Above Engine: an 
 cmake/           # EngineModule.cmake (engine_module), Testing.cmake (engine_test),
                  #   HeaderSelfContainment.cmake, Warnings.cmake
 tests/unit/      # Catch2 tests, CTest label "unit" — no GPU, run by CI
-tests/gpu/       # Catch2 tests needing a real device, CTest label "gpu" — not run by CI
+tests/gpu/       # Catch2 tests needing a real device, CTest label "gpu" — run by CI on
+                 #   Linux against lavapipe
+tests/scene/     # real headless runs of the engine asserting on the RunReport they
+                 #   return, CTest label "scene" — run by CI on the two Linux debug jobs
+tests/data/      # a content root of its own: two hand-authored glTF cubes and the
+                 #   scenes built from them, so expected counters are derivable
 tests/support/   # shared test helpers (TestPaths.h, CaptureStream.h, RhiTestFixture.h)
 content/         # runtime content root — models/ scenes/ textures/ shaders/ (.spv is gitignored)
 ```

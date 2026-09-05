@@ -251,5 +251,6 @@ Make each of these in the step that earns it, not up front:
 - **Steps 46 and 47:** the binary names in the Do and Verify text.
 - **Step 40a's ImGui section** still claims the panel is in the committed baseline screenshot;
   `tests/scripts/baseline_test.sh:40` passes `--no-ui`, so it is not.
-- **The stage table in `CLAUDE.md`** moves to Stage 8 when this stage completes, and this document
-  is deleted in the same commit.
+- **The stage table in `CLAUDE.md`** moves to **Stage 7.5**, not Stage 8, when this stage
+  completes — `docs/backend_readiness_plan.md` inserts B1–B6 between the two — and this
+  document is deleted in the same commit.

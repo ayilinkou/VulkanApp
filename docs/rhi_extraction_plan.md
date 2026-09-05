@@ -1,11 +1,14 @@
 # Stage 5 — RHI Extraction: Implementation Plan
 
-> **Temporary document.** It exists to carry Stage 5 (steps 24–34 of the architecture plan)
-> and is scheduled for deletion when the stage completes. See [§10 Retirement](#10-retirement)
-> for what to keep and what to throw away.
+> **Retained past its stage.** It was written to be deleted when Stage 5 completed, and kept
+> instead: R1–R17 are history, but the design decisions in §2 still govern what the RHI's
+> public seam is allowed to say. See [§10 Retirement](#10-retirement) for what a future
+> retirement would promote and what it would throw away —
+> `backend_readiness_plan.md`'s B6 proposes itself as the moment.
 
 **Created:** 16 August 2026 · **Supersedes:** `architecture_plan.md` Part IV,
-steps 24–34 · **Status:** in progress — see the [progress table](#progress)
+steps 24–34 · **Superseded in part:** D7 and D8, by `backend_readiness_plan.md`'s D14 and
+D15 · **Status:** Stage 5 complete — see the [progress table](#progress)
 
 ---
 
@@ -223,6 +226,15 @@ issuing raw release/acquire barriers.
 
 ### D7 — The descriptor/binding model is *not* abstracted in Stage 5
 
+> **Superseded by D14** (`backend_readiness_plan.md`). The half that held — Stage 5 leaves the
+> binding model alone, isolated rather than abstracted — is history now that Stage 5 is done.
+> The half that did not is the reasoning below that bindless makes the question moot: the
+> architecture plan's §20 row 5 requires a non-bindless fallback anyway, only
+> `descriptorBindingPartiallyBound` is actually enabled, samplers and per-frame constants stay
+> conventional even under bindless, and the D3D12 convergence needs SM6.6. Bindless is
+> therefore deferred until after the D3D12 backend, and the binding model is neutralised in
+> Stage 7.5 instead. Kept because the *cost* it names is real and D14 accepts it.
+
 Vulkan descriptor sets/layouts/pools and D3D12 root signatures + descriptor heaps have no
 cheap common denominator; every portable RHI that tries pays for it in complexity. It is also
 the part of the design that a later step makes largely moot: bindless (step 69) converges
@@ -238,6 +250,12 @@ Related: prefer push constants for per-draw data. They map 1:1 onto D3D12 root c
 and the code already uses them for material data (`main.cpp:1680`).
 
 ### D8 — Pipelines stay Vulkan-side; the *cache* is a neutral opaque blob
+
+> **First half superseded by D15** (`backend_readiness_plan.md`). Pipelines stayed Vulkan-side
+> only because the binding model was not neutral; D14 neutralises it, so the reason expires and
+> pipeline creation moves behind the RHI in Stage 7.5 (B4). **The rest of this decision
+> stands** — the cache is still a neutral opaque blob and `IPipelineCache` does not change
+> shape, and the dynamic-rendering note below is reaffirmed as D17.
 
 `PipelineBuilder` and `ComputePipelineBuilder` keep taking `vk::Format` and friends under
 `rhi/vulkan/` for the whole of Stage 5. Neutralizing pipeline creation means neutralizing
@@ -1612,6 +1630,14 @@ Explicitly **not** in Stage 5, to keep the boundary of this plan sharp:
 
 ## 8. D3D12 readiness checklist
 
+> **This section is now Stage 7.5's brief.** Its §10 said the checklist "becomes the starting
+> backlog for the backend", and that is what happened: the six rows still reading *Partial* or
+> *Deferred* — command recording, command pool, CPU/GPU sync, descriptors, per-draw constants,
+> pipelines — are, near enough, the step list in `docs/backend_readiness_plan.md`, which uses
+> "no row here still reads Partial or Deferred" as half of its definition of done. One row has
+> moved since R17 walked it: *present sync* is no longer Deferred, because Stage 6 landed
+> `IPresentTarget` with neutral `SemaphoreHandle`s.
+
 R17 walked this. Each row carries the verdict it was walked for — **neutral** (the public API
 says nothing Vulkan-specific), **isolated** (Vulkan is still visible, but only from named
 sites the boundary check holds), **deferred** (out of Stage 5 by an explicit decision), or
@@ -1718,12 +1744,18 @@ cannot hold:
 
 ## 10. Retirement
 
-When R17 is done and `CLAUDE.md`'s stage table reads Stage 5 ✅:
+R17 is done and `CLAUDE.md`'s stage table reads Stage 5 ✅, and this file was kept anyway —
+retiring it is a deliberate decision rather than a step that falls due. **Stage 7.5's B6
+proposes itself as the moment**, since that is when the transitional area shrinks to its
+permanent residue and §8's checklist has no unfinished rows left to track.
 
 **Promote before deleting.** The step list is disposable; the design decisions are not. Move
-into `docs/architecture_plan.md` (or a small permanent `docs/rhi.md`):
+into `docs/architecture_plan.md`, a small permanent `docs/rhi.md`, or
+`docs/backend_readiness_plan.md` — which is the natural host, since it is retained for the
+same reason and its D14–D18 already continue this numbering:
 
-- §2 D1–D12 — the rationale future work has to respect.
+- §2 D0–D13 — the rationale future work has to respect, less D7 and D8, superseded by D14
+  and D15.
 - §4 — how the boundary is enforced, since the checks stay in the build.
 - §8 — the D3D12 readiness checklist, which becomes the starting backlog for the backend.
 - R12b's flag convention, into `CLAUDE.md`'s *Conventions*: a command-line option that only one

@@ -281,6 +281,14 @@ One descriptor set per material, one fixed-size pool, three texture slots, per-b
 enabled* on the device (`main.cpp:1019`) but unused. Bindless is available and would remove
 S2-2's material ceiling, the per-batch descriptor bind, and the 3-texture cap in one change.
 
+> **Correction, September 2026.** Two halves of that have not aged well. The flag is no longer
+> unused — it moved to `VulkanDevice.cpp:980` and now backs the partially-bound material set
+> that lets an untextured material render (`MaterialFactory.cpp:76`). And "bindless is
+> available" overstated it: partial binding is a different feature, and bindless additionally
+> needs `runtimeDescriptorArray` and `shaderSampledImageArrayNonUniformIndexing` at minimum,
+> neither of which is enabled. The material ceiling was lifted separately by a growable pool
+> (R13); the 3-texture cap remains. See D14 in `backend_readiness_plan.md`.
+
 ### S2-4 — Assets load synchronously on the frame thread, with a full GPU drain per resource.
 `EndSingleTimeCommand` does `queue.waitIdle()` per texture/buffer. Scene load runs inside
 the ImGui frame. For headless CI this matters twice over: load time dominates a short
@@ -1617,7 +1625,7 @@ prefixes, `p` for raw pointers). Codify rather than change it:
 | 2 | **lavapipe fidelity.** It is not a real driver; some bugs won't reproduce, some lavapipe quirks aren't real bugs. | Treat it as a *smoke and correctness* device, not a conformance oracle. Golden images per-driver-class. Add a self-hosted GPU runner later if it becomes worthwhile. |
 | 3 | **ECS rewrite risk.** Replacing `Entity`/`Component` touches scene, serialization, editor and renderer. | Sequenced *after* headless tests exist (Phase 5, not Phase 1). Sparse sets over archetypes to limit complexity. Keep `SceneDesc`/`.map` stable so scenes don't need re-authoring. |
 | 4 | **Frame graph complexity.** Easy to over-engineer into 3k lines. | Constrain: no async compute in v1, no aliasing in v1, no multi-queue in v1. Add only when a pass needs it. Target < 900 lines. |
-| 5 | **Bindless portability.** Older and mobile-class drivers have weaker descriptor-indexing support. | `descriptorBindingPartiallyBound` is already required and working. Keep a non-bindless fallback path behind a device-capability flag; the `gpu` test suite runs both. |
+| 5 | **Bindless portability.** Older and mobile-class drivers have weaker descriptor-indexing support. | **Resolved by deferral** — see D14 in `backend_readiness_plan.md`. This row and D7 pointed in opposite directions: D7 deferred the binding model *because* bindless would replace it, while this row's mitigation ("keep a non-bindless fallback behind a device-capability flag; the `gpu` suite runs both") required building that model regardless. Bindless now waits until after the D3D12 backend and the binding model is neutralised in Stage 7.5, so there is no bindless path to fall back from and no flag to carry. Revisit this row when step 70 is scheduled. Note also that the assurance below it was overstated: only `descriptorBindingPartiallyBound` is enabled (`VulkanDevice.cpp:980`), and it serves partially-bound material sets, not bindless — which additionally needs `runtimeDescriptorArray` and `shaderSampledImageArrayNonUniformIndexing` at minimum. |
 | 6 | **Build time** with 9 targets and no PCH sharing. | Per-module PCHs, `ccache` (already wired), unity builds for the leaf modules if needed. Note that splitting *reduces* rebuild cost: touching a pass no longer rebuilds a 2,453-line TU. |
 | 7 | **Golden-image flakiness eroding trust.** | Non-blocking until stable; perceptual tolerance; determinism fixes (esp. the pointer-value sort order) land first. |
 | 8 | **Catch2 vs GoogleTest.** | Recommendation: Catch2 v3. Decide once, in Phase 0. |
@@ -1683,9 +1691,17 @@ document.
 | 9 | 57–68 | Handles, snapshots, radix sort, culling, ECS | ~3 weeks |
 | 10 | 69–76 | Bindless, mega-buffers, async loading, indirect | open-ended |
 
+Stage **7.5** is inserted between 7 and 8 and is not in that table because it is not part of
+Part IV: `docs/backend_readiness_plan.md` carries it as B1–B6. It neutralises the RHI's frame
+API — submission, rendering scope, binding, pipelines, draw and dispatch — which Stage 5 left
+undone and which a D3D12 backend needs before it can be written. It also reorders this table's
+Stage 8 and defers its step 70.
+
 **The stated CI goal — "launch a scene headless and assert on it" — is complete at step 47.**
 Steps 48–76 are performance and scalability, and they are much safer to attempt once 47 is
-done, because from then on every change is regression-tested by CI rather than by hand.
+done, because from then on every change is regression-tested by CI rather than by hand. The
+**backend goal** — "a D3D12 backend is a matter of implementing interfaces rather than
+designing them" — is complete at B6.
 
 ---
 
@@ -2527,6 +2543,20 @@ and a real-content one.
 
 ## Stage 8 — Passes & frame graph (steps 48–56)
 
+> **Stage 7.5 comes first, and changes this stage.** `docs/backend_readiness_plan.md` inserts
+> six steps (B1–B6) that neutralise submission, rendering scope, binding, pipelines and
+> draw/dispatch recording — the prerequisites for a D3D12 backend, none of which this stage
+> was written to provide. Three consequences here:
+>
+> - **50–54 follow B1–B6, not the reverse** (D18). Each recorder is then moved onto the neutral
+>   API once and into a `Pass` class once, rather than having `Pass::Execute` take a
+>   `vk::CommandBuffer` and be edited again later.
+> - **Step 56, the frame graph, is deferred past the D3D12 backend.** A second backend needs a
+>   neutral command list, not a graph; building the graph against one backend bakes in its
+>   assumptions. 55 folds into 56 as this stage already suggests.
+> - **48 and 49 are unaffected**, and 48 is worth pulling early — two backends mean two shader
+>   targets and double the ways a hand-mirrored GPU struct layout drifts silently.
+
 ### 48. `ShaderTypes.h` shared with Slang
 - **Do:** Move `GlobalBuffer`/`CameraData`/`LightData` (`main.cpp:73-102`) and
   `shaders/common.slangh:3-45` into one header included by both, with `static_assert`s on
@@ -2687,7 +2717,7 @@ direction + CI green".
 | # | Work | Verify | Size |
 |---|---|---|---|
 | 69 | Instance data → SSBO indexed by `SV_InstanceID` (`shaderDrawParameters` already enabled at `main.cpp:1016`) | Screenshot unchanged; vertex attributes drop 12 → 4 | L |
-| 70 | Bindless texture array + material params SSBO | Screenshot unchanged; `DescriptorBinds` per frame drops to ~2; the 3-textures-per-material cap is gone | XL |
+| 70 | Bindless texture array + material params SSBO — **deferred until after the D3D12 backend** (D14). It is not a prerequisite for one: Stage 7.5's B3 neutralises the binding model instead, and 70 then lands behind a stable seam where it can be verified on both backends. Until it does, the 3-texture cap stays, and raising it is a contained change (`TextureBinding`, the layout, `PBRMaterial`'s writes, both surface shaders) rather than one entangled with an XL step | Screenshot unchanged; `DescriptorBinds` per frame drops to ~2; the 3-textures-per-material cap is gone | XL |
 | 71 | Mega vertex/index buffer | Screenshot unchanged; vertex/index binds drop to 1 per frame | L |
 | 72 | Mipmaps + `maxLod = VK_LOD_CLAMP_NONE` (`main.cpp:2109` currently clamps to 0) | Screenshot **changes for the better**; re-baseline. Sponza floor stops shimmering. Aniso finally does something | L |
 | 73 | Async asset loading on the job system | Window stays responsive during a Sponza load; a progress counter advances; `resize_and_reload` test passes | XL |
@@ -2704,11 +2734,17 @@ The long pole, and the only strictly serial chain:
 ```
 13 → 15 → 20 → 24 → 25 → 26 → 35 → 37 → 38 → 39 ┐
 └───────────────── all done ──────────────────┘ ├→ 46 → 47   ← CI goal
-                                                │
-                     41 → 42 → 44 ──────────────┘
-                     ↑
-                    next
+                                                │        │
+                     41 → 42 → 44 ──────────────┘        │
+                     ↑                                   │
+                    next                                 ↓
+                          B1 → B2 → B3 → B4 → B5 → B6 → D3D12   ← backend goal
 ```
+
+The chain continues past the CI goal into **Stage 7.5** (`backend_readiness_plan.md`), which
+is the serial run-up to a second backend. Step 47 is a genuine prerequisite rather than a
+convenient predecessor: it is the instrument that tells you whether the D3D12 backend renders
+what the Vulkan one does, and without it every B-step is verified by eye.
 
 The spine starts much further along than it reads: **35, 37, 38 and 39 are all done**, so
 the next link in the chain is 41. Step 40a is off the spine entirely — 46 needs it, and
@@ -2736,6 +2772,10 @@ Steps you should **not** attempt out of order:
 | Frame graph (56) before passes are classes (50–54) | Two large refactors superimposed |
 | ECS (67) before headless CI (47) | The largest-blast-radius change with no safety net |
 | Bindless (70) before growable descriptors (31) | You'd rewrite the descriptor layer twice |
+| Bindless (70) before the D3D12 backend | Same reason, one layer up: you'd design the binding seam against one backend, then discover on the second what it assumed (D14) |
+| Frame graph (56) before the D3D12 backend | You'd bake one backend's assumptions into the graph, and the backend needs a neutral command list rather than a graph |
+| Any B-step before step 47 | Cross-backend verification is a screenshot and a counter diff; 47 is what makes those a test rather than an eyeball |
+| Pass classes (50–54) before B1–B6 | `Pass::Execute` would take a `vk::CommandBuffer` and every pass would be edited again (D18) |
 
 ---
 

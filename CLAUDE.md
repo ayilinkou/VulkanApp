@@ -4,7 +4,7 @@ HikariEngine — a cross-platform game engine (Windows / Linux) built on Vulkan,
 with a D3D12 backend planned later. C++20, CMake + vcpkg, Slang shaders.
 
 The engine is mid-refactor from a single-executable prototype into a layered library set.
-Five reference documents drive that work — read the relevant section before proposing
+Six reference documents drive that work — read the relevant section before proposing
 architecture, and prefer them over inventing a design:
 
 - `docs/architecture_plan.md` — target architecture (Part II), test strategy
@@ -17,18 +17,27 @@ architecture, and prefer them over inventing a design:
   backlog's priorities.
 - `docs/rhi_extraction_plan.md` — **retained past Stage 5, which it drove.** Replaced Part IV
   steps 24–34 with a 17-step sequence (R1–R17) that made the RHI's public API backend-neutral
-  so a D3D12 backend is possible later, and records the design decisions (D0–D12) behind that.
+  so a D3D12 backend is possible later, and records the design decisions (D0–D13) behind that.
   Stage 5 is complete, so R1–R17 are history; the **decisions remain live**, because they
-  govern what the RHI's public seam is allowed to say and Part IV's own §10 predates them.
-  Read it before touching anything under `engine/rhi/include/`. Its §10 lists what should
-  eventually be promoted into the architecture plan; retiring it is a deliberate future
-  decision, not a step in the roadmap.
+  govern what the RHI's public seam is allowed to say and Part IV's own §10 predates them —
+  **except D7 and D8, superseded by Stage 7.5's D14 and D15.** Read it before touching
+  anything under `engine/rhi/include/`. Its §10 lists what should eventually be promoted into
+  the architecture plan; retiring it is a deliberate future decision, not a step in the
+  roadmap, though `backend_readiness_plan.md`'s B6 proposes itself as the moment.
 - `docs/stage7_plan.md` — **temporary, and deleted when Stage 7 completes.** How steps 40b
   and 41–47 are to be built: the decisions settled before the stage started, the order they
   run in (41 → 47, then 40b), what is deferred and what each deferral blocks, and the
   amendments the architecture plan is owed as the work lands. Where it and Part IV disagree,
   it wins — it was written later; where it and the RHI plan disagree about the RHI's seam,
   the RHI plan wins.
+- `docs/backend_readiness_plan.md` — **retained, like the RHI plan and for the same reason.**
+  Stage 7.5: the four seams a second backend needs and Stage 5 did not build — submission and
+  command-list ownership, rendering scope, bind groups, pipelines, and draw/dispatch recording
+  — as six steps (B1–B6), plus the decisions (D14–D18) behind them. It **supersedes D7 and
+  D8**, deferring bindless until after D3D12 and neutralising the binding model instead, and it
+  reorders Part IV's Stage 8. Its D-numbers continue the RHI plan's series deliberately: both
+  govern the same seam. **It has not been through `/grill-me` yet, and its §0 says not to start
+  B1 until it has.**
 
 ---
 
@@ -37,10 +46,11 @@ architecture, and prefer them over inventing a design:
 **Follow Part IV strictly, one step at a time.** Each step is sized to end in a compiling,
 running application. Do not start work outside the current stage, and do not combine steps,
 without asking first. Stage 5 is complete, so Part IV is the work order again — but where
-`docs/rhi_extraction_plan.md`'s decisions (D0–D12) and Part IV disagree about the RHI's
-public seam, **the RHI plan still wins**. Part IV was written before the seam was
-neutralised, so its later stages still spell interfaces in raw Vulkan; §10.2 is one such
-place. Re-express rather than copy, and amend Part IV as you go.
+the **D-series** and Part IV disagree about the RHI's public seam, **the D-series wins**. It
+spans two documents: `docs/rhi_extraction_plan.md` holds D0–D13 and
+`docs/backend_readiness_plan.md` holds D14–D18, which supersede D7 and D8. Part IV was
+written before the seam was neutralised, so its later stages still spell interfaces in raw
+Vulkan; §10.2 is one such place. Re-express rather than copy, and amend Part IV as you go.
 
 **Do not opportunistically refactor.** `src/main.cpp` is ~2,600 lines and is scheduled for
 dismantling across Stages 4–9. Touching it outside its scheduled step creates conflicts with
@@ -118,9 +128,15 @@ even when a task feels finished. Reading (`git status`, `git log`, `git diff`) i
 | 6 — Headless capability | 35–40a | ✅ done (`HeadlessPlatform`, `--headless`, the present-layout seam) |
 | Cleanup between 6 and 7 | — | ✅ done (`Hikari::` namespace + `namespace_check`, CI's `static-checks` job, the `counters`/`timings`/`run` report + `--no-ui`, `docs/backlog.md`) |
 | **7 — Engine shell + DI** | **40b, 41–47** | **next** — **CI goal met at step 47** |
-| 8+ — Frame graph, DOD, scalability | 48–76 | not started |
+| 7.5 — Backend readiness | B1–B6 | not started — **plan written, grill pending** (`docs/backend_readiness_plan.md`) |
+| 8+ — Frame graph, DOD, scalability | 48–76 | not started; 48–56 partly superseded by Stage 7.5 |
 
 Update this table when a stage completes.
+
+Stage 7.5 is inserted rather than renumbered: a whole stage at 8 would cascade through every
+cross-reference in three documents, and the `.5` costs nothing. It closes the gap between the
+RHI's neutral *resource* API, which Stage 5 built, and its *frame* API, which nothing has —
+the prerequisite for a D3D12 backend.
 
 ---
 

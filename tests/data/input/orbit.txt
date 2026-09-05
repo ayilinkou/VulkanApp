@@ -11,7 +11,6 @@ frame 1   key.down Escape   # release the cursor to the camera: held-key movemen
 frame 2   key.down W        # start moving forward
 frame 6   key.up W          # and stop, so the camera ends somewhere fixed
 frame 8   window.resize 320x240
-frame 12  screenshot
 frame 22  screenshot
 frame 32  screenshot
 frame 42  screenshot

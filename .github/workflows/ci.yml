@@ -253,12 +253,30 @@ jobs:
       # tests/support/RhiTestFixture.h enables validation unconditionally — so a
       # release run asserts everything a debug one does, and release is the only
       # structurally different configuration in the matrix (asan inherits debug).
+      # Prints what the loader can see before anything asks it for a device, so
+      # a failure below is read against an enumeration rather than guessed at.
+      - name: Vulkan device probe
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        env:
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: |
+          echo "ICD manifests present:"
+          ls -l /usr/share/vulkan/icd.d/ || true
+          sudo apt-get install -y --no-install-recommends vulkan-tools
+          vulkaninfo --summary || true
+
       - name: GPU tests (lavapipe)
         id: gpu-tests
         if: matrix.os == 'ubuntu-latest'
         continue-on-error: true
         env:
           VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          # An ICD is supplied on purpose here, so a case that cannot make a
+          # device is a failure rather than a skip. Without this the whole suite
+          # skips and CTest reports "100% tests passed" — a green run of nothing,
+          # which is what happened the first time these ran.
+          HIKARI_TESTS_REQUIRE_DEVICE: "1"
         run: ctest --test-dir build/${{ matrix.preset }} -L gpu --output-on-failure
 
       # The scene matrix launches real frames and asserts on the report they
@@ -272,6 +290,7 @@ jobs:
         continue-on-error: true
         env:
           VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          HIKARI_TESTS_REQUIRE_DEVICE: "1"
         run: ctest --test-dir build/${{ matrix.preset }} -L scene --output-on-failure
 
       # header-check reports "skipped" in the four non-debug jobs, which is not a

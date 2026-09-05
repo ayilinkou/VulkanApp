@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdlib>
+
 #include <array>
 #include <cstdint>
 #include <exception>
@@ -169,8 +171,23 @@ inline DeviceInstance* TryGetDevice(DeviceConfig config)
 }
 
 /**
+ * Whether a run without a device is a failure rather than a skip.
+ *
+ * Set by CI, which supplies an ICD on purpose and therefore learns nothing from
+ * a green run of nothing: CTest reports a skipped case as not-failed, so an
+ * environment that quietly stopped providing a device looks exactly like one
+ * that never had to. A developer without a GPU still gets skips.
+ */
+inline bool DeviceRequiredByEnvironment()
+{
+    const char* value = std::getenv("HIKARI_TESTS_REQUIRE_DEVICE");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+/**
  * The shared device for `config`, skipping the calling test case when there is
- * none.
+ * none — or failing it where the environment says a device was supposed to be
+ * there.
  *
  * The skip happens here rather than at the call site because SKIP() throws —
  * that is what aborts the case — so the return below is unreachable whenever
@@ -181,7 +198,13 @@ inline Hikari::Rhi::IDevice& RequireDevice(DeviceConfig config = DeviceConfig::D
 {
     DeviceInstance* pInstance = TryGetDevice(config);
     if (pInstance == nullptr)
-        SKIP("No usable Vulkan device: " + Detail::Slots()[config].FailureReason);
+    {
+        const std::string reason = "No usable Vulkan device: " + Detail::Slots()[config].FailureReason;
+        if (DeviceRequiredByEnvironment())
+            FAIL(reason);
+
+        SKIP(reason);
+    }
 
     return *pInstance->pDevice;
 }

@@ -49,6 +49,13 @@ constexpr uint64_t kFrames = 3u;
  * is indistinguishable from a real one. The probe device is destroyed
  * immediately; each case builds its own through the engine.
  */
+/** The reason no device could be created, empty while one could. */
+std::string& DeviceFailureReason()
+{
+    static std::string reason;
+    return reason;
+}
+
 bool HasUsableDevice()
 {
     static const bool bUsable = []
@@ -67,13 +74,39 @@ bool HasUsableDevice()
 
             return Rhi::CreateDevice(desc) != nullptr;
         }
-        catch (const std::exception&)
+        catch (const std::exception& error)
         {
+            DeviceFailureReason() = error.what();
             return false;
         }
     }();
 
     return bUsable;
+}
+
+/**
+ * Skips the calling case where there is no device — or fails it where the
+ * environment says one was supposed to be there.
+ *
+ * CI supplies an ICD on purpose, so a skipped case teaches it nothing: CTest
+ * counts a skip as not-failed, and a run of nothing then reports 100% passed.
+ * That is what happened the first time these ran in CI, and the reason went
+ * unprinted because a skip prints nothing.
+ */
+void RequireDevice()
+{
+    if (HasUsableDevice())
+        return;
+
+    const std::string reason =
+        DeviceFailureReason().empty() ? "No usable Vulkan device"
+                                      : "No usable Vulkan device: " + DeviceFailureReason();
+
+    const char* required = std::getenv("HIKARI_TESTS_REQUIRE_DEVICE");
+    if (required != nullptr && required[0] != '\0' && required[0] != '0')
+        FAIL(reason);
+
+    SKIP(reason);
 }
 
 /**
@@ -140,8 +173,7 @@ struct SceneExpectation
 
 void CheckScene(const SceneExpectation& expected)
 {
-    if (!HasUsableDevice())
-        SKIP("No usable Vulkan device");
+    RequireDevice();
 
     INFO("scene: " << expected.Scene);
 
@@ -230,8 +262,7 @@ TEST_CASE("Two entities of one model merge into a single instanced batch", "[sce
 
 TEST_CASE("The shipped scene loads, renders and reports no validation errors", "[scene]")
 {
-    if (!HasUsableDevice())
-        SKIP("No usable Vulkan device");
+    RequireDevice();
 
     // The hand-authored cubes exist so the expected counters are derivable; this
     // case exists so the suite is not exclusively testing geometry nobody ships.
@@ -249,8 +280,7 @@ TEST_CASE("The shipped scene loads, renders and reports no validation errors", "
 
 TEST_CASE("The headless binary runs a scene and writes what it was asked for", "[scene]")
 {
-    if (!HasUsableDevice())
-        SKIP("No usable Vulkan device");
+    RequireDevice();
 
     // The one case that launches the real binary. Everything above tests the
     // engine; this tests the program around it — argument parsing, the platform
@@ -289,14 +319,14 @@ TEST_CASE("The headless binary runs a scene and writes what it was asked for", "
 
 TEST_CASE("A scripted run replays input, resizes and captures where it was told to", "[scene]")
 {
-    if (!HasUsableDevice())
-        SKIP("No usable Vulkan device");
+    RequireDevice();
 
     // The coverage --frames alone cannot reach: held-key movement, a resize and
     // the target recreation it forces, a capture at a chosen frame, and a quit
     // that ends the run from inside.
     HeadlessPlatform platform(WindowDesc{.Width = kWidth, .Height = kHeight});
-    platform.SetInputScript(InputScript::Load(std::string(TestDataDir()) + "input/orbit.txt"));
+    platform.SetInputScript(
+        InputScript::Load(std::string(TestDataDir()) + "input/scripted_replay.txt"));
 
     Editor::VulkanUiBackend uiBackend;
 
@@ -333,7 +363,7 @@ TEST_CASE("A scripted run replays input, resizes and captures where it was told 
 
     CHECK(result.Report.Counters.Run.ValidationErrors == 0u);
 
-    // orbit.txt quits on frame 14, so the run ends there rather than going on
+    // The script quits on frame 14, so the run ends there rather than going on
     // forever — which is what an unbounded headless run does without input.
     CHECK(result.Report.Frames == 15u);
 

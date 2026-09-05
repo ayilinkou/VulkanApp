@@ -1,4 +1,5 @@
 engine_test(core_tests SOURCES unit/core/SwapbackArrayTests.cpp
+  unit/core/ClockTests.cpp
   unit/core/LogTests.cpp unit/core/JobSystemTests.cpp
   unit/core/HandleTests.cpp unit/core/TimerTests.cpp LIBS Engine::Core)
 

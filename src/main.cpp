@@ -17,6 +17,7 @@
 #include "Vertex.h"
 #include "XmlParser.h"
 
+#include <core/Clock.h>
 #include <core/IJobSystem.h>
 #include <core/Log.h>
 #include <core/SerialJobSystem.h>
@@ -532,22 +533,12 @@ public:
                 m_FrameWaitMs += MillisecondsSince(idleStart);
             }
 
-            const auto now = frameStart;
-            if (m_Spec.bFixedDt)
-            {
-                m_DeltaTime = 1.f / 60.f;
-                m_RunTime += m_DeltaTime;
-            }
-            else
-            {
-                m_DeltaTime =
-                    std::chrono::duration<float, std::chrono::seconds::period>(now - m_LastTime)
-                        .count();
-                m_RunTime =
-                    std::chrono::duration<float, std::chrono::seconds::period>(now - m_StartTime)
-                        .count();
-            }
-            m_LastTime = now;
+            // Simulation time, which is not the frame's measured duration: the
+            // timings below read the steady clock themselves, so a fixed step
+            // moves the world without touching what the report says the frame
+            // cost.
+            m_DeltaTime = m_Clock->Tick();
+            m_RunTime = m_Clock->Elapsed();
 
             // Guarded rather than abstracted: a headless run never initialised
             // SDL, so polling it is not merely pointless but a call into a
@@ -673,8 +664,13 @@ private:
     {
         LogMsg(LogSeverity::Info, LogMain, "Init()");
 
-        m_StartTime = std::chrono::steady_clock::now();
-        m_LastTime = m_StartTime;
+        // Started here rather than at construction, so that the world's clock
+        // begins when the frame loop is about to, not while the device is still
+        // being built.
+        if (m_Spec.bFixedDt)
+            m_Clock = std::make_unique<Core::FixedStepClock>();
+        else
+            m_Clock = std::make_unique<Core::RealClock>();
 
         InitVulkan();
         InitImGui();
@@ -2751,8 +2747,12 @@ private:
      */
     std::chrono::steady_clock::time_point m_ProcessStart;
 
-    std::chrono::steady_clock::time_point m_StartTime;
-    std::chrono::steady_clock::time_point m_LastTime;
+    /**
+     * The simulation's clock, chosen by --fixed-dt. Owned rather than injected:
+     * which one it is follows from the run description the engine already has,
+     * and nothing else in the process has an opinion about it.
+     */
+    std::unique_ptr<Core::IClock> m_Clock;
     uint64_t m_FrameCounter = 0;
     float m_RunTime = 0.f;
     float m_DeltaTime = 0.f;

@@ -2551,6 +2551,20 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
 - **Caveat:** Batch order still depends on pointer values via `Drawable::operator<`
   (`Drawable.h:16-22`), so ordering is only stable within a single process. Fully
   deterministic ordering arrives at step 58.
+- **Landed (2026-09-05), at the size `stage7_plan.md` cut it to: `IClock` only.**
+  `engine/core/include/core/Clock.h` holds `IClock`, `RealClock` and `FixedStepClock`, where
+  §9's target layout already put them. `Engine` owns one, chosen by `--fixed-dt`, and reads it
+  for the simulation timestep alone — the run report's timings still read the steady clock
+  directly, because a measurement a fixed step silently rewrote would be worthless.
+  `Elapsed()` reports the time as of the last `Tick()` rather than as of now, which is both what
+  the old code did and what two readers within one frame need. No `SerialJobSystem` forcing:
+  nothing today can make job order affect output. No `--seed`: nothing in `src/` or `engine/`
+  draws a random number, so the flag would have had nothing to seed.
+- **Verified across processes, and the caveat above still stands.** Two windowed runs and two
+  offscreen runs each produced identical counters and pixel-identical captures, and all four
+  match the committed baseline. That is stronger than the caveat promises — the same build
+  allocates in the same order, so the pointer-value sort happens to agree run to run — but it is
+  an observation about this build, not a guarantee. Step 58 is what turns it into one.
 - **"Force FIFO in deterministic mode" was dropped from this step, deliberately.** It does
   not do what it looks like it does. Present mode affects *timing*, not pixels — the loop
   renders every frame either way — so it buys nothing for byte-identical screenshots. And for

@@ -35,4 +35,31 @@ void HeadlessPlatform::SetWindowMode(WindowMode) {}
 void HeadlessPlatform::SetRelativeMouseMode(bool) {}
 
 void HeadlessPlatform::WarpMouse(float, float) {}
+HeadlessPlatform::~HeadlessPlatform()
+{
+    ReportUndeliveredScriptEvents(m_Input, LogHeadless);
+}
+
+std::span<const PlatformEvent> HeadlessPlatform::PumpEvents()
+{
+    const std::span<const PlatformEvent> events = m_Input.Advance();
+
+    // Applied here rather than left to the caller: a resize event from a window
+    // system arrives *after* the surface changed, and a replay that reported one
+    // without changing the extent would describe a state this platform was never
+    // in.
+    for (const PlatformEvent& event : events)
+    {
+        if (event.Type == EventType::Resized)
+            m_Extent = event.Size;
+    }
+
+    return events;
+}
+
+bool HeadlessPlatform::IsKeyDown(Key key) const
+{
+    return m_Input.IsKeyDown(key);
+}
+
 } // namespace Hikari::Platform

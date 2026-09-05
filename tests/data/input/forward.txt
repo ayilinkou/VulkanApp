@@ -1,0 +1,2 @@
+frame 0   key.down  Escape
+frame 1   key.down  W

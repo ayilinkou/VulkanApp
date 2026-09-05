@@ -1,0 +1,19 @@
+# Hold S for 120 frames, then A for 120 frames, then quit.
+#
+# Escape first: held-key movement is ignored while the cursor is visible, so
+# without it both keys below would be inert. One key.down is a toggle — the
+# matching key.up would do nothing, since only a press is acted on.
+#
+# A key is held for every frame between its down and its up, and both are
+# delivered before that frame's movement runs, so S is held on frames 1 to 120
+# and A on 121 to 240.
+
+frame 0    key.down Escape
+
+frame 1    key.down S
+frame 121  key.up   S
+
+frame 121  key.down A
+frame 241  key.up   A
+
+frame 241  quit

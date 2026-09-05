@@ -3,7 +3,12 @@
 #include <stdexcept>
 #include <string>
 
+#include <memory>
+#include <span>
+
 #include <platform/IPlatform.h>
+#include <platform/InputScript.h>
+#include <platform/ScriptedInputSource.h>
 
 struct SDL_Window;
 
@@ -43,6 +48,17 @@ public:
     Core::Extent2D GetFramebufferExtent() const override;
     void Show() override;
     void SetWindowMode(WindowMode mode) override;
+    std::span<const PlatformEvent> PumpEvents() override;
+    bool IsKeyDown(Key key) const override;
+
+    /**
+     * Replays `script` alongside whatever the window system reports, so a
+     * scripted run can be watched rather than only asserted on. A scripted
+     * resize asks the window system to resize the window, and the resize event
+     * that follows is the window system's own — synthesising one here would
+     * report a size the window did not have.
+     */
+    void SetInputScript(InputScript script) { m_Input.SetScript(std::move(script)); }
     void SetRelativeMouseMode(bool bEnabled) override;
     void WarpMouse(float x, float y) override;
     void* GetNativeWindowHandle() const override;
@@ -55,5 +71,20 @@ public:
 
 private:
     SDL_Window* m_pWindow = nullptr;
+
+    /**
+     * A frame's events, translated and native, refilled by each PumpEvents call
+     * and handed out as a span.
+     *
+     * Behind a pointer because SDL_Event is a union and cannot be forward
+     * declared, and this header is included by code that has no business
+     * seeing SDL. The natives are kept because PlatformEvent::pNative points
+     * into them: a pointer to a poll-loop local would dangle before the caller
+     * read it.
+     */
+    struct EventBuffer;
+    std::unique_ptr<EventBuffer> m_pEvents;
+
+    ScriptedInputSource m_Input;
 };
 } // namespace Hikari::Platform

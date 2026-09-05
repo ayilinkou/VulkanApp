@@ -239,37 +239,47 @@ public:
             m_DeltaTime = m_Clock->Tick();
             m_RunTime = m_Clock->Elapsed();
 
-            // Guarded rather than abstracted: a headless run never initialised
-            // SDL, so polling it is not merely pointless but a call into a
-            // subsystem that does not exist. The event seam that removes the
-            // direct call altogether is its own step.
-            SDL_Event event;
-            while (!m_Platform.IsHeadless() && SDL_PollEvent(&event))
+            // Through the platform seam rather than by polling a window system:
+            // that is what lets a scripted run replay the same events a real one
+            // produces, so input, resizing and target recreation are exercised
+            // with no display attached.
+            for (const PlatformEvent& event : m_Platform.PumpEvents())
             {
-                m_pUiBackend->ProcessPlatformEvent(&event);
+                // Every event, translated or not — text input and mouse buttons
+                // are the UI's business and this switch does not name them.
+                if (event.pNative != nullptr)
+                    m_pUiBackend->ProcessPlatformEvent(event.pNative);
 
-                switch (event.type)
+                switch (event.Type)
                 {
-                    case SDL_EVENT_MOUSE_MOTION:
-                        HandleMouse(event.motion.xrel, event.motion.yrel);
+                    case EventType::MouseMotion:
+                        HandleMouse(event.MouseDeltaX, event.MouseDeltaY);
                         break;
-                    case SDL_EVENT_QUIT:
+                    case EventType::Quit:
                         g_bShouldClose = true;
                         break;
-                    case SDL_EVENT_WINDOW_RESIZED:
+                    case EventType::Resized:
                         RecreateSwapchainAndRenderImages();
                         break;
-                    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                    case EventType::FocusGained:
                         m_bIsFocused = true;
                         LogMsg(LogSeverity::Info, LogWindow, "Focus gained");
                         break;
-                    case SDL_EVENT_WINDOW_FOCUS_LOST:
+                    case EventType::FocusLost:
                         m_bIsFocused = false;
                         LogMsg(LogSeverity::Info, LogWindow, "Focus lost");
                         break;
-                    case SDL_EVENT_KEY_DOWN:
+                    case EventType::KeyDown:
                         if (m_bIsFocused)
-                            HandleKey(event.key.key);
+                            HandleKey(event.key);
+                        break;
+                    case EventType::CaptureRequested:
+                        // Staged on this frame rather than the last one, which is
+                        // the only way a run captures a chosen moment.
+                        m_bCaptureThisFrame = true;
+                        break;
+                    case EventType::KeyUp:
+                    case EventType::Unknown:
                         break;
                 }
             }
@@ -284,7 +294,11 @@ public:
 
             const bool bIsLastFrame =
                 g_bShouldClose || (m_Spec.Frames != 0 && (m_FrameCounter + 1) >= m_Spec.Frames);
-            const bool captureScreenshot = bIsLastFrame && m_Spec.bCaptureFinalFrame;
+            // Either the run's last frame, when a capture was asked for at all,
+            // or whichever frame a script pointed at.
+            const bool captureScreenshot =
+                m_bCaptureThisFrame || (bIsLastFrame && m_Spec.bCaptureFinalFrame);
+            m_bCaptureThisFrame = false;
 
             DrawFrame(captureScreenshot);
 
@@ -327,7 +341,11 @@ public:
         }
 
         RunResult result{.Report = BuildRunReport(), .Capture = {}};
-        if (bWantsScreenshot)
+
+        // Whatever was staged, however it came to be asked for: the run
+        // description's "capture the final frame", or a script pointing at a
+        // frame of its own.
+        if (m_bScreenshotBufferReady)
             result.Capture = CaptureFinalFrame();
 
         // After both: the report reads the present target's extent and format,
@@ -667,7 +685,8 @@ private:
 
     void HandleMouse(float x, float y)
     {
-        if (!m_bCursorVisible && m_Spec.CameraPreset < 0)
+        // Same reasoning as HandleMovement: the cursor decides, not the preset.
+        if (!m_bCursorVisible)
             m_Camera->Rotate(x, y);
     }
 
@@ -686,24 +705,26 @@ private:
     }
 
     /** This includes OS key repeat delay. */
-    void HandleKey(SDL_Keycode key)
+    void HandleKey(Key key)
     {
         switch (key)
         {
-            case SDLK_ESCAPE:
+            case Key::Escape:
                 if (m_bCursorVisible)
                     HideCursor();
                 else
                     ShowCursor();
                 break;
-            case SDLK_F9:
+            case Key::F9:
                 m_Platform.SetWindowMode(WindowMode::Windowed);
                 break;
-            case SDLK_F10:
+            case Key::F10:
                 m_Platform.SetWindowMode(WindowMode::BorderlessFullscreen);
                 break;
-            case SDLK_F11:
+            case Key::F11:
                 m_Platform.SetWindowMode(WindowMode::ExclusiveFullscreen);
+                break;
+            default:
                 break;
         }
     }
@@ -714,36 +735,39 @@ private:
      */
     void HandleMovement()
     {
-        // Headless for the same reason the event pump is guarded: SDL was never
-        // initialised. Unreachable in practice today, since m_bCursorVisible
-        // starts true and only a key event can clear it, but that is a property
-        // of the current defaults rather than something to rely on.
-        if (m_Platform.IsHeadless() || m_bCursorVisible || m_Spec.CameraPreset >= 0)
+        // A visible cursor means the UI is being driven rather than the camera.
+        //
+        // A camera preset used to block movement too, from a time when the only
+        // input was a hand on a keyboard and a preset run had to be pinned down
+        // to be comparable. A script is as deterministic as the preset is, so a
+        // preset now means where the camera starts and nothing more; a run that
+        // wants it to stay there simply sends no input, which is what every
+        // capture run does.
+        if (m_bCursorVisible)
             return;
 
         glm::vec3 camOffset = {0.f, 0.f, 0.f};
-        const bool* state = SDL_GetKeyboardState(nullptr);
-        if (state[SDL_SCANCODE_A])
+        if (m_Platform.IsKeyDown(Key::A))
         {
             camOffset += -m_Camera->GetRightVector() * m_Camera->GetMoveSpeed() * m_DeltaTime;
         }
-        if (state[SDL_SCANCODE_D])
+        if (m_Platform.IsKeyDown(Key::D))
         {
             camOffset += m_Camera->GetRightVector() * m_Camera->GetMoveSpeed() * m_DeltaTime;
         }
-        if (state[SDL_SCANCODE_W])
+        if (m_Platform.IsKeyDown(Key::W))
         {
             camOffset += m_Camera->GetForwardVector() * m_Camera->GetMoveSpeed() * m_DeltaTime;
         }
-        if (state[SDL_SCANCODE_S])
+        if (m_Platform.IsKeyDown(Key::S))
         {
             camOffset += -m_Camera->GetForwardVector() * m_Camera->GetMoveSpeed() * m_DeltaTime;
         }
-        if (state[SDL_SCANCODE_Q])
+        if (m_Platform.IsKeyDown(Key::Q))
         {
             camOffset += glm::vec3(0.f, -1.f, 0.f) * m_Camera->GetMoveSpeed() * m_DeltaTime;
         }
-        if (state[SDL_SCANCODE_E])
+        if (m_Platform.IsKeyDown(Key::E))
         {
             camOffset += glm::vec3(0.f, 1.f, 0.f) * m_Camera->GetMoveSpeed() * m_DeltaTime;
         }
@@ -2367,6 +2391,9 @@ private:
 
     uint32_t m_FrameIndex = 0;
     bool m_bIsFocused = true;
+
+    /** Set by a scripted capture request, cleared by the frame that honours it. */
+    bool m_bCaptureThisFrame = false;
     bool m_bCursorVisible = true;
     /**
      * Set in main() before anything else runs, so startupMs covers argument

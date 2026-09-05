@@ -7,6 +7,7 @@
 
 #include <platform/CommandLine.h>
 #include <platform/IPlatform.h>
+#include <platform/InputScript.h>
 #include <platform/SdlPlatform.h>
 
 #include <editor/VulkanUiBackend.h>
@@ -39,6 +40,12 @@ struct EditorOptions
      * "borderless and exclusive at once" cannot be represented past parsing.
      */
     WindowMode StartWindowMode = WindowMode::Windowed;
+
+    /**
+     * --input: a script replayed alongside real input. The same scripts the
+     * headless binary takes, so a run that fails in CI can be watched here.
+     */
+    std::string InputScriptPath;
 };
 
 void PrintUsage()
@@ -64,6 +71,10 @@ void PrintUsage()
                  "window\n"
                  "  --fullscreen            Start in exclusive fullscreen, selecting a "
                  "display mode\n"
+                 "  --input <path>          Replay an input script alongside real input: key "
+                 "presses, resizes,\n"
+                 "                          captures and quit, delivered on the frames it "
+                 "names\n"
                  "  --help                  Print this message and exit\n";
 }
 
@@ -136,6 +147,8 @@ EditorOptions ParseArgs(int argc, char** argv)
             }
             else if (flag == "--resolution")
                 options.WindowSize = option.RequireExtent2D();
+            else if (flag == "--input")
+                options.InputScriptPath = option.RequireValue();
             else if (flag == "--borderless")
             {
                 option.RequireNoValue();
@@ -202,8 +215,16 @@ int main(int argc, char** argv)
         if (options.StartWindowMode != WindowMode::Windowed)
             platform.SetWindowMode(options.StartWindowMode);
 
+        if (!options.InputScriptPath.empty())
+            platform.SetInputScript(InputScript::Load(options.InputScriptPath));
+
         Editor::VulkanUiBackend uiBackend;
         return Engine::RunApp(platform, uiBackend, options.Run, processStart);
+    }
+    catch (const InputScriptError& e)
+    {
+        LogMsg(LogSeverity::Error, LogEditor, "{}", e.what());
+        return EXIT_FAILURE;
     }
     catch (const SDLException& e)
     {

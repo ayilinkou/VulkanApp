@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
 
 #include <core/Extent2D.h>
+#include <platform/PlatformEvent.h>
 
 namespace Hikari::Platform
 {
@@ -82,6 +84,26 @@ public:
      * event, so callers rebuild nothing here.
      */
     virtual void SetWindowMode(WindowMode mode) = 0;
+
+    /**
+     * Everything that happened since the last call, in order.
+     *
+     * The span is valid until the next call: a caller walks it within the frame
+     * that asked for it. This is the only way input reaches the engine — polling
+     * a window system directly is what this seam exists to prevent, because it
+     * is also what a headless run cannot do.
+     */
+    virtual std::span<const PlatformEvent> PumpEvents() = 0;
+
+    /**
+     * Whether `key` is held right now.
+     *
+     * Separate from the event stream because held-key movement asks a different
+     * question from key transitions: a frame wants to know what is down, not
+     * what changed. Implementations track this from the same source their
+     * events come from.
+     */
+    virtual bool IsKeyDown(Key key) const = 0;
 
     virtual void SetRelativeMouseMode(bool bEnabled) = 0;
     virtual void WarpMouse(float x, float y) = 0;

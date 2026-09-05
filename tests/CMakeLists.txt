@@ -11,7 +11,8 @@ target_compile_definitions(
 
 # Separate from core_tests so that Core's tests keep linking nothing but Core.
 engine_test(platform_tests SOURCES unit/platform/PathsTests.cpp
-  unit/platform/CommandLineTests.cpp unit/platform/HeadlessPlatformTests.cpp
+  unit/platform/CommandLineTests.cpp
+  unit/platform/InputScriptTests.cpp unit/platform/HeadlessPlatformTests.cpp
   LIBS Engine::Platform)
 
 engine_test(asset_tests SOURCES unit/asset/AssetCacheTests.cpp LIBS Engine::Asset)

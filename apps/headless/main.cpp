@@ -7,6 +7,7 @@
 
 #include <platform/CommandLine.h>
 #include <platform/HeadlessPlatform.h>
+#include <platform/InputScript.h>
 #include <platform/IPlatform.h>
 
 #include <editor/VulkanUiBackend.h>
@@ -28,6 +29,7 @@ void PrintUsage()
     std::cout << "HikariHeadless — renders with no window, into an offscreen target\n"
                  "\n"
                  "Usage: HikariHeadless --frames <N> [options]\n"
+                 "       HikariHeadless --input <script that quits> [options]\n"
                  "\n"
                  "Options:\n";
 
@@ -41,6 +43,9 @@ void PrintUsage()
                  "exiting\n"
                  "  --resolution <W>x<H>    Render into an offscreen target of this size "
                  "(default: 1280x720)\n"
+                 "  --input <path>          Replay an input script: key presses, resizes, "
+                 "captures and quit,\n"
+                 "                          delivered on the frames it names\n"
                  "  --help                  Print this message and exit\n";
 }
 
@@ -61,6 +66,12 @@ struct HeadlessOptions
      * with no display to ask uses its own documented constant.
      */
     Extent2D TargetSize{};
+
+    /** --input: a script replayed as the run proceeds. Empty means no input. */
+    std::string InputScriptPath;
+
+    /** Loaded during parsing, because whether it quits decides what else is required. */
+    InputScript Script;
 };
 
 HeadlessOptions ParseArgs(int argc, char** argv)
@@ -110,6 +121,8 @@ HeadlessOptions ParseArgs(int argc, char** argv)
             }
             else if (flag == "--resolution")
                 options.TargetSize = option.RequireExtent2D();
+            else if (flag == "--input")
+                options.InputScriptPath = option.RequireValue();
             else
             {
                 LogMsg(LogSeverity::Error, LogHeadless, "Unknown option: {}", flag);
@@ -123,16 +136,30 @@ HeadlessOptions ParseArgs(int argc, char** argv)
         ExitWithUsage(EXIT_FAILURE);
     }
 
-    // Of the frame loop's exits, the ones that need a window cannot fire here,
-    // leaving the frame counter — which only fires when Frames != 0. So a run
-    // without --frames ends on a signal, and this binary exists for CI, where
-    // nobody is there to send one: the job burns its whole timeout and dies to
-    // SIGTERM, writing neither screenshot nor report.
-    if (run.Spec.Frames == 0)
+    if (!options.InputScriptPath.empty())
+    {
+        try
+        {
+            options.Script = InputScript::Load(options.InputScriptPath);
+        }
+        catch (const InputScriptError& e)
+        {
+            LogMsg(LogSeverity::Error, LogHeadless, "{}", e.what());
+            ExitWithUsage(EXIT_FAILURE);
+        }
+    }
+
+    // Something has to be able to end a run with no window. Of the frame loop's
+    // exits the ones that need a window cannot fire here, which leaves two: the
+    // frame counter, and a script that quits. Without either, this binary — which
+    // exists for CI, where nobody is there to send a signal — burns its whole
+    // timeout and dies to SIGTERM, writing neither screenshot nor report.
+    if (run.Spec.Frames == 0 && !options.Script.EndsRun())
     {
         LogMsg(LogSeverity::Error, LogHeadless,
-               "--frames is required: with no window there is nothing that can end the run, so it "
-               "would render forever and write nothing");
+               "--frames is required unless --input names a script that quits: with no window "
+               "there is nothing else that can end the run, so it would render forever and write "
+               "nothing");
         ExitWithUsage(EXIT_FAILURE);
     }
 
@@ -166,6 +193,8 @@ int main(int argc, char** argv)
     // ask is its own documented constant.
     HeadlessPlatform platform(
         WindowDesc{.Width = options.TargetSize.Width, .Height = options.TargetSize.Height});
+
+    platform.SetInputScript(options.Script);
 
     // The UI is attached here too, deliberately: headless means no window, not a
     // feature-reduced build. A headless run is the only place the UI's bring-up

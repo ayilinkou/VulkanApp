@@ -1,0 +1,20 @@
+# Replayed by HikariHeadless --input, and by the scene test of the same name.
+# One command per line; blank lines and everything after a # are ignored.
+#
+# The point is coverage a --frames run cannot reach: held-key movement, a resize
+# and the target recreation it forces, a capture at a chosen frame, and a quit
+# that ends the run from inside rather than by counting frames.
+
+frame 1   key.down Escape   # release the cursor to the camera: held-key movement is
+                            # ignored while the cursor is visible, so without this the
+                            # W below would be inert and the case would test nothing
+frame 2   key.down W        # start moving forward
+frame 6   key.up W          # and stop, so the camera ends somewhere fixed
+frame 8   window.resize 320x240
+frame 12  screenshot
+frame 22  screenshot
+frame 32  screenshot
+frame 42  screenshot
+frame 52  screenshot
+frame 62  screenshot
+frame 63  quit

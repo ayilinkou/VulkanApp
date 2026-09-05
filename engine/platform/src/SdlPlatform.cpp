@@ -1,6 +1,7 @@
 #include <platform/SdlPlatform.h>
 
 #include <format>
+#include <vector>
 
 #include <SDL3/SDL.h>
 
@@ -9,9 +10,78 @@
 namespace Hikari::Platform
 {
 
+/** A frame's events, both forms. See the declaration for why it hides here. */
+struct SdlPlatform::EventBuffer
+{
+    std::vector<PlatformEvent> Translated;
+    std::vector<SDL_Event> Native;
+};
+
 namespace
 {
 constexpr Core::LogCategory LogSDL("SDL");
+
+/** The keys the seam names, and nothing else: an unnamed key is not an event. */
+Key TranslateKey(SDL_Keycode keycode)
+{
+    switch (keycode)
+    {
+        case SDLK_W:
+            return Key::W;
+        case SDLK_A:
+            return Key::A;
+        case SDLK_S:
+            return Key::S;
+        case SDLK_D:
+            return Key::D;
+        case SDLK_Q:
+            return Key::Q;
+        case SDLK_E:
+            return Key::E;
+        case SDLK_ESCAPE:
+            return Key::Escape;
+        case SDLK_F9:
+            return Key::F9;
+        case SDLK_F10:
+            return Key::F10;
+        case SDLK_F11:
+            return Key::F11;
+        default:
+            return Key::Unknown;
+    }
+}
+
+/** The scancode a held-key query reads, which is a different table from above. */
+SDL_Scancode ScancodeFor(Key key)
+{
+    switch (key)
+    {
+        case Key::W:
+            return SDL_SCANCODE_W;
+        case Key::A:
+            return SDL_SCANCODE_A;
+        case Key::S:
+            return SDL_SCANCODE_S;
+        case Key::D:
+            return SDL_SCANCODE_D;
+        case Key::Q:
+            return SDL_SCANCODE_Q;
+        case Key::E:
+            return SDL_SCANCODE_E;
+        case Key::Escape:
+            return SDL_SCANCODE_ESCAPE;
+        case Key::F9:
+            return SDL_SCANCODE_F9;
+        case Key::F10:
+            return SDL_SCANCODE_F10;
+        case Key::F11:
+            return SDL_SCANCODE_F11;
+        case Key::Unknown:
+            break;
+    }
+
+    return SDL_SCANCODE_UNKNOWN;
+}
 
 /**
  * How much of the display a window with no size of its own takes. A window the
@@ -66,7 +136,7 @@ SDLException::SDLException(const std::string& message)
 {
 }
 
-SdlPlatform::SdlPlatform(const WindowDesc& desc)
+SdlPlatform::SdlPlatform(const WindowDesc& desc) : m_pEvents(std::make_unique<EventBuffer>())
 {
     if (!SDL_Init(SDL_INIT_VIDEO))
         throw SDLException("Failed to initialise SDL!");
@@ -121,8 +191,97 @@ SdlPlatform::SdlPlatform(const WindowDesc& desc)
                  size.Height);
 }
 
+std::span<const PlatformEvent> SdlPlatform::PumpEvents()
+{
+    m_pEvents->Translated.clear();
+    m_pEvents->Native.clear();
+
+    // Filled first and completely, because the translated events point into it:
+    // growing this vector while translating would move the events already
+    // pointed at.
+    SDL_Event event;
+    while (SDL_PollEvent(&event))
+        m_pEvents->Native.push_back(event);
+
+    m_pEvents->Translated.reserve(m_pEvents->Native.size());
+    for (const SDL_Event& native : m_pEvents->Native)
+    {
+        PlatformEvent translated;
+        translated.pNative = &native;
+
+        switch (native.type)
+        {
+            case SDL_EVENT_QUIT:
+                translated.Type = EventType::Quit;
+                break;
+            case SDL_EVENT_WINDOW_RESIZED:
+                translated.Type = EventType::Resized;
+                translated.Size = GetFramebufferExtent();
+                break;
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                translated.Type = EventType::FocusGained;
+                break;
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+                translated.Type = EventType::FocusLost;
+                break;
+            case SDL_EVENT_MOUSE_MOTION:
+                translated.Type = EventType::MouseMotion;
+                translated.MouseDeltaX = native.motion.xrel;
+                translated.MouseDeltaY = native.motion.yrel;
+                break;
+            case SDL_EVENT_KEY_DOWN:
+                translated.Type = EventType::KeyDown;
+                translated.key = TranslateKey(native.key.key);
+                break;
+            case SDL_EVENT_KEY_UP:
+                translated.Type = EventType::KeyUp;
+                translated.key = TranslateKey(native.key.key);
+                break;
+            default:
+                // Not a kind the seam names. It still reaches the UI backend,
+                // which is handed every native event: text input and mouse
+                // buttons are its business and not the engine's.
+                translated.Type = EventType::Unknown;
+                break;
+        }
+
+        m_pEvents->Translated.push_back(translated);
+    }
+
+    // Scripted events after the window system's, so a script and a hand on the
+    // keyboard can drive the same run. A scripted resize is a request to the
+    // window system rather than an event: SDL reports the resize that follows,
+    // as it would for one the user dragged.
+    for (const PlatformEvent& scripted : m_Input.Advance())
+    {
+        if (scripted.Type == EventType::Resized)
+        {
+            SDL_SetWindowSize(m_pWindow, static_cast<int>(scripted.Size.Width),
+                              static_cast<int>(scripted.Size.Height));
+            continue;
+        }
+
+        m_pEvents->Translated.push_back(scripted);
+    }
+
+    return m_pEvents->Translated;
+}
+
+bool SdlPlatform::IsKeyDown(Key key) const
+{
+    const SDL_Scancode scancode = ScancodeFor(key);
+    if (scancode == SDL_SCANCODE_UNKNOWN)
+        return false;
+
+    // Either source will do: a script holding W and a hand holding W mean the
+    // same thing to whatever asked.
+    return SDL_GetKeyboardState(nullptr)[scancode] || m_Input.IsKeyDown(key);
+}
+
 SdlPlatform::~SdlPlatform()
 {
+    ReportUndeliveredScriptEvents(m_Input, LogSDL);
+
     if (m_pWindow)
     {
         SDL_WarpMouseInWindow(m_pWindow, 0.f, 0.f);

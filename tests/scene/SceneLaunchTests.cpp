@@ -12,6 +12,7 @@
 #include <core/SerialJobSystem.h>
 
 #include <platform/HeadlessPlatform.h>
+#include <platform/InputScript.h>
 #include <platform/Paths.h>
 
 #include <rhi/Diagnostics.h>
@@ -284,4 +285,65 @@ TEST_CASE("The headless binary runs a scene and writes what it was asked for", "
                                std::istreambuf_iterator<char>());
     CHECK(contents.find("\"counters\"") != std::string::npos);
     CHECK(contents.find("\"validationErrors\": 0") != std::string::npos);
+}
+
+TEST_CASE("A scripted run replays input, resizes and captures where it was told to", "[scene]")
+{
+    if (!HasUsableDevice())
+        SKIP("No usable Vulkan device");
+
+    // The coverage --frames alone cannot reach: held-key movement, a resize and
+    // the target recreation it forces, a capture at a chosen frame, and a quit
+    // that ends the run from inside.
+    HeadlessPlatform platform(WindowDesc{.Width = kWidth, .Height = kHeight});
+    platform.SetInputScript(InputScript::Load(std::string(TestDataDir()) + "input/orbit.txt"));
+
+    Editor::VulkanUiBackend uiBackend;
+
+    Rhi::Diagnostics::Desc diagnosticsDesc;
+    diagnosticsDesc.Policy = Rhi::ValidationPolicy::Count;
+    diagnosticsDesc.MinSeverity = Rhi::DiagnosticSeverity::Info;
+    Rhi::Diagnostics diagnostics(diagnosticsDesc);
+
+    SerialJobSystem jobSystem;
+    Paths paths(TestDataDir());
+
+    Engine::RunSpec spec;
+    spec.ScenePath = "scenes/single_cube.map";
+    spec.bFixedDt = true;
+    spec.bNoUi = true;
+    spec.bRecordTimings = true;
+
+    // No --frames equivalent and no bCaptureFinalFrame: the script's quit is
+    // what ends this run and its screenshot is what captures it, which is the
+    // whole point of the case.
+    spec.Frames = 0u;
+
+    const std::unique_ptr<Engine::IEngine> engine = Engine::CreateEngine(
+        Engine::EngineDesc{.pPlatform = &platform,
+                           .pPaths = &paths,
+                           .pJobSystem = &jobSystem,
+                           .pDiagnostics = &diagnostics,
+                           .pUiBackend = &uiBackend,
+                           .Spec = spec,
+                           .Config = Engine::EngineConfig{},
+                           .ProcessStart = std::chrono::steady_clock::now()});
+
+    const Engine::RunResult result = engine->Run();
+
+    CHECK(result.Report.Counters.Run.ValidationErrors == 0u);
+
+    // orbit.txt quits on frame 14, so the run ends there rather than going on
+    // forever — which is what an unbounded headless run does without input.
+    CHECK(result.Report.Frames == 15u);
+
+    // ...and resizes to 320x240 on frame 8, which the report and the capture
+    // both have to reflect: a resize that did not recreate the target would
+    // leave one of them at the size the run started with.
+    CHECK(result.Report.Run.Width == 320u);
+    CHECK(result.Report.Run.Height == 240u);
+
+    REQUIRE_FALSE(result.Capture.IsEmpty());
+    CHECK(result.Capture.Extent.Width == 320u);
+    CHECK(result.Capture.Extent.Height == 240u);
 }

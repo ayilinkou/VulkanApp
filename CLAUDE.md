@@ -4,7 +4,7 @@ HikariEngine — a cross-platform game engine (Windows / Linux) built on Vulkan,
 with a D3D12 backend planned later. C++20, CMake + vcpkg, Slang shaders.
 
 The engine is mid-refactor from a single-executable prototype into a layered library set.
-Six reference documents drive that work — read the relevant section before proposing
+Five reference documents drive that work — read the relevant section before proposing
 architecture, and prefer them over inventing a design:
 
 - `docs/architecture_plan.md` — target architecture (Part II), test strategy
@@ -24,12 +24,6 @@ architecture, and prefer them over inventing a design:
   anything under `engine/rhi/include/`. Its §10 lists what should eventually be promoted into
   the architecture plan; retiring it is a deliberate future decision, not a step in the
   roadmap, though `backend_readiness_plan.md`'s B6 proposes itself as the moment.
-- `docs/stage7_plan.md` — **temporary, and deleted when Stage 7 completes.** How steps 40b
-  and 41–47 are to be built: the decisions settled before the stage started, the order they
-  run in (41 → 47, then 40b), what is deferred and what each deferral blocks, and the
-  amendments the architecture plan is owed as the work lands. Where it and Part IV disagree,
-  it wins — it was written later; where it and the RHI plan disagree about the RHI's seam,
-  the RHI plan wins.
 - `docs/backend_readiness_plan.md` — **retained, like the RHI plan and for the same reason.**
   Stage 7.5: the four seams a second backend needs and Stage 5 did not build — submission and
   command-list ownership, rendering scope, bind groups, pipelines, and draw/dispatch recording
@@ -127,8 +121,8 @@ even when a task feels finished. Reading (`git status`, `git log`, `git diff`) i
 | 5 — RHI extraction | R1–R17 | ✅ done (`Engine::RHI` — backend-neutral API, handle-based resources, batched uploads, growable descriptors, a pipeline cache, and GPU tests) |
 | 6 — Headless capability | 35–40a | ✅ done (`HeadlessPlatform`, `--headless`, the present-layout seam) |
 | Cleanup between 6 and 7 | — | ✅ done (`Hikari::` namespace + `namespace_check`, CI's `static-checks` job, the `counters`/`timings`/`run` report + `--no-ui`, `docs/backlog.md`) |
-| **7 — Engine shell + DI** | **40b, 41–47** | **next** — **CI goal met at step 47** |
-| 7.5 — Backend readiness | B1–B6 | not started — **plan written, grill pending** (`docs/backend_readiness_plan.md`) |
+| 7 — Engine shell + DI | 40b, 41–47 | ✅ done (`engine/engine` + `engine/asset` + `engine/editor`, `HikariEditor` + `HikariHeadless`, injected subsystems, the event seam, and headless scene tests in CI) |
+| **7.5 — Backend readiness** | **B1–B6** | **next** — **plan written, grill pending** (`docs/backend_readiness_plan.md`) |
 | 8+ — Frame graph, DOD, scalability | 48–76 | not started; 48–56 partly superseded by Stage 7.5 |
 
 Update this table when a stage completes.
@@ -226,6 +220,12 @@ Asset paths resolve against a content root, not the CWD, so the app runs from an
 # The same engine with no window, rendering into an offscreen target. --frames
 # is required: nothing else can end the run.
 ./build/ninja-debug-linux/HikariHeadless --frames 100 --screenshot --report
+
+# Both binaries replay an input script: key presses, resizes, captures and quit,
+# delivered on the frames it names. The editor merges it with real input, so a
+# scripted run that failed in CI can be watched.
+./build/ninja-debug-linux/HikariHeadless --input tests/data/input/orbit.txt
+./build/ninja-debug-linux/HikariEditor  --input tests/data/input/orbit.txt
 ```
 
 `Paths` (in `engine/platform`) resolves the root in priority order: `--content` →
@@ -269,15 +269,28 @@ the committed `tests/baseline/`. Two signals, and **both are usable**:
   script forces `--resolution 1920x1080 --borderless`, so captures come out at a fixed extent
   instead of at whatever size the window manager chose. **Never byte-compare** — PNG encoding
   is not reproducible, so `cmp`/`md5sum` on a pixel-identical pair still differs. Compare
-  decoded pixels (`PIL.ImageChops.difference(a, b).getbbox() is None`).
+  decoded pixels, and **convert to RGB first**:
+
+  ```python
+  a = Image.open(before).convert("RGB")   # not RGBA
+  b = Image.open(after).convert("RGB")
+  assert ImageChops.difference(a, b).getbbox() is None
+  ```
+
+  The conversion is the load-bearing part. `Image.getbbox()` defaults to `alpha_only=True`, so
+  on an RGBA pair it inspects **only the alpha channel** — and every capture this engine writes
+  is fully opaque, which makes the check pass for two images of completely different scenes.
+  `.convert("RGB")` removes the channel it would look at; `getbbox(alpha_only=False)` is the
+  other way to say it. This was wrong here for a while and nobody noticed, because a check that
+  always passes looks exactly like a check that keeps passing.
 
 `--borderless` rather than `--resolution` alone is what makes that work: a window size is a
 request the window system may refuse, and a tiling compositor always does. The rationale is
 in the script, next to the flags.
 
-`HikariHeadless` renders into an offscreen target with no window at all. It requires
-`--frames` — nothing else can end the run — and takes `--resolution` for the target's extent
-rather than a window's. It has no window-mode flags, because the binary *is* the mode: the
+`HikariHeadless` renders into an offscreen target with no window at all. It needs something
+that can end the run — `--frames`, or an `--input` script containing `quit` — and takes
+`--resolution` for the target's extent rather than a window's. It has no window-mode flags, because the binary *is* the mode: the
 `--headless` flag it replaced existed only so one binary could refuse its own options. The UI
 still draws, so a headless capture and an editor one of the same frame come out
 pixel-identical — verified at step 46 and the thing step 47's CI tests rest on.

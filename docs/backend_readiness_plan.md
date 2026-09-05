@@ -1,6 +1,7 @@
 # Stage 7.5 — Backend readiness: making a second backend possible
 
-> **Retained document.** Unlike `stage7_plan.md`, this one is not deleted when its stage ends.
+> **Retained document.** Unlike Stage 7's own plan, which was deleted when that stage ended,
+> this one outlives its stage.
 > Its decisions govern how the RHI's public seam spells recording, binding, pipelines and
 > submission, and a D3D12 backend — plus everything written against the seam afterwards — has
 > to respect them. See [§9 Retention](#9-retention).
@@ -40,7 +41,7 @@ because it is written in complete sentences, and is not.
 The grill has a concrete agenda: [§7](#7-open-questions-for-the-grill) lists the questions
 this document decided quickly, or did not decide at all. Start there rather than at B1.
 
-`stage7_plan.md` came out of the same process — a `/grill-me` interview before the stage
+Stage 7's plan came out of the same process — a `/grill-me` interview before the stage
 started, so the work did not re-litigate its own design a step at a time. That is the
 precedent this follows.
 
@@ -422,7 +423,7 @@ The agenda for §0's interview. Each is something this document either decided f
 
 ## 9. Retention
 
-**This document is kept after the stage ends.** `stage7_plan.md` is deleted at its stage's
+**This document is kept after the stage ends.** Stage 7's plan was deleted at its stage's
 close because it records how to build things that will by then be built.
 `rhi_extraction_plan.md` was kept past Stage 5 because its decisions still govern a seam that
 outlived it. This one is the second kind: D14–D18 say what the RHI's public API is allowed to

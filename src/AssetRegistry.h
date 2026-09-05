@@ -23,6 +23,7 @@ inline constexpr Hikari::Core::LogCategory LogAssetRegistry{"Asset Registry"};
 
 struct CubemapCreateInfo;
 
+class MaterialFactory;
 class Texture;
 class Cubemap;
 class ModelData;
@@ -38,8 +39,13 @@ class ModelData;
 class AssetRegistry
 {
 public:
+    /**
+     * The material factory is passed through to ModelLoader rather than used
+     * here: a model's materials are built while it loads, and the factory that
+     * builds them belongs to the engine, not to this registry.
+     */
     AssetRegistry(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::IUploadContext& uploadContext,
-                  const Hikari::Platform::Paths& paths);
+                  const Hikari::Platform::Paths& paths, MaterialFactory& materialFactory);
     ~AssetRegistry();
 
     AssetRegistry(const AssetRegistry&) = delete;

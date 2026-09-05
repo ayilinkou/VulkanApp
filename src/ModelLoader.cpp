@@ -18,8 +18,9 @@
 using namespace Hikari;
 
 ModelLoader::ModelLoader(Rhi::IDevice& rhiDevice, Rhi::IUploadContext& uploadContext,
-                         AssetRegistry& assets)
-    : m_RhiDevice(rhiDevice), m_UploadContext(uploadContext), m_Assets(assets)
+                         AssetRegistry& assets, MaterialFactory& materialFactory)
+    : m_RhiDevice(rhiDevice), m_UploadContext(uploadContext), m_Assets(assets),
+      m_MaterialFactory(materialFactory)
 {
 }
 
@@ -79,8 +80,7 @@ std::vector<std::unique_ptr<Material>> ModelLoader::LoadMaterials(const aiScene*
     for (size_t i = 0; i < pScene->mNumMaterials; i++)
     {
         aiMaterial* pMat = pScene->mMaterials[i];
-        materials.emplace_back(
-            MaterialFactory::Get()->CreatePBRMaterial(pMat, modelRoot, m_Assets));
+        materials.emplace_back(m_MaterialFactory.CreatePBRMaterial(pMat, modelRoot, m_Assets));
     }
     return materials;
 }

@@ -851,15 +851,19 @@ private:
         m_PipelineCache = m_RhiDevice->CreatePipelineCache(Rhi::PipelineCacheDesc{
             .Path = m_Paths.UserData("pipeline_cache.bin"), .DebugName = "Pipeline Cache"});
 
+        // Before the registry, which hands it to the loader that builds
+        // materials, and before the pipelines, which are laid out against its
+        // descriptor set layout.
+        m_MaterialFactory = std::make_unique<MaterialFactory>(*m_RhiDevice, m_TextureSampler.Get());
+
         // After the upload context it loads through, and before anything that
         // loads: the registry is what every asset in the run comes from.
-        m_Assets = std::make_unique<AssetRegistry>(*m_RhiDevice, *m_UploadContext, m_Paths);
+        m_Assets = std::make_unique<AssetRegistry>(*m_RhiDevice, *m_UploadContext, m_Paths,
+                                                   *m_MaterialFactory);
 
         // Still a singleton, injected at step 44. Its lifetime used to be the
         // registry's, and has to be somebody's now that the registry is not one.
         ModelManager::Init();
-        MaterialFactory::Init(*m_RhiDevice, m_TextureSampler.Get());
-
         CreatePipelines();
         CreateCommandBuffers();
         CreateGlobalBuffers();
@@ -1000,12 +1004,14 @@ private:
         m_Skybox.reset();
         m_SceneGraph.reset();
         ShutdownImGui();
-        MaterialFactory::Shutdown();
         ModelManager::Shutdown();
 
-        // Last of the asset side: the caches assert they are empty, which only
-        // holds once everything above has dropped what it borrowed.
+        // The registry's caches assert they are empty, which only holds once
+        // everything above has dropped what it borrowed; and the factory owns
+        // the descriptor sets those materials were allocated from, so it goes
+        // after the models that held them.
         m_Assets.reset();
+        m_MaterialFactory.reset();
 
         m_bShutdown = true;
     }
@@ -1432,7 +1438,7 @@ private:
                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
 
         std::array setLayouts{*m_GlobalBufferSetLayout,
-                              MaterialFactory::Get()->GetDescriptorSetLayout()};
+                              m_MaterialFactory->GetDescriptorSetLayout()};
 
         vk::PushConstantRange pushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eFragment,
                                                 .size = sizeof(PBRMaterial::MaterialData)};
@@ -1491,7 +1497,7 @@ private:
               .colorWriteMask = vk::ColorComponentFlagBits::eR}}};
 
         std::array<vk::DescriptorSetLayout, 2> setLayouts = {
-            m_GlobalBufferSetLayout, MaterialFactory::Get()->GetDescriptorSetLayout()};
+            m_GlobalBufferSetLayout, m_MaterialFactory->GetDescriptorSetLayout()};
 
         vk::PushConstantRange pushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eFragment,
                                                 .size = sizeof(PBRMaterial::MaterialData)};
@@ -2666,6 +2672,12 @@ private:
      */
     std::unique_ptr<Rhi::IUploadContext> m_UploadContext;
     std::unique_ptr<Rhi::IPipelineCache> m_PipelineCache;
+
+    /**
+     * Declared before the registry it is handed to, so that it outlives the
+     * models whose materials hold descriptor sets from its allocator.
+     */
+    std::unique_ptr<MaterialFactory> m_MaterialFactory;
 
     /**
      * Every asset the run loads comes from here. Declared after the upload

@@ -2510,6 +2510,16 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
 - **Do:** Same treatment; owned by `AssetRegistry`.
 - **Verify:** Output unchanged.
 - **Size:** M · **Needs:** 42
+- **Landed (2026-09-05), owned by `Engine` rather than by `AssetRegistry`.** The factory has
+  callers on both sides of the asset/renderer line: `ModelLoader` builds materials with it while
+  loading, and the opaque and transparent pipeline layouts are built against its descriptor set
+  layout. Registry ownership would put a `vk::DescriptorSetLayout` on `engine/assets`' public
+  surface — and an `rhi/vulkan/` allowlist entry on a module that otherwise needs none — for the
+  sake of the renderer's use of it. `Engine` builds it before the registry and passes it through
+  to `ModelLoader`, the one loader that needs it; it is destroyed after the registry, since the
+  materials that hold descriptor sets from its allocator die with the models. It stays in `src/`:
+  it is not an assets type, and Stage 8 relocates materials and pipelines together, which is when
+  the materials-versus-pipeline-layouts question has to be answered anyway.
 
 ### 44. Inject `ModelManager` and break `Model`'s back-pointer
 - **Do:** The awkward one. `Model`'s constructor currently calls `ModelManager::Get()->

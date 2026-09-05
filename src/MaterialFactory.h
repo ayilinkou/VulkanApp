@@ -13,18 +13,30 @@ struct aiMaterial;
 
 class AssetRegistry;
 
+/**
+ * Builds materials and owns the descriptor machinery they are allocated from.
+ *
+ * Engine-owned rather than registry-owned, though a model's materials are built
+ * during a load: its descriptor set layout is a renderer input, wanted by the
+ * pipeline layouts as much as by the materials. Handing it out from the asset
+ * layer would put a Vulkan descriptor set layout on that layer's public surface
+ * for the sake of one caller on the other side of the line.
+ */
 class MaterialFactory
 {
 public:
-    static void Init(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::SamplerHandle sampler);
-    static void Shutdown();
+    MaterialFactory(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::SamplerHandle sampler);
+    ~MaterialFactory();
 
-    static MaterialFactory* Get() { return s_Instance; }
+    MaterialFactory(const MaterialFactory&) = delete;
+    MaterialFactory& operator=(const MaterialFactory&) = delete;
+    MaterialFactory(MaterialFactory&&) = delete;
+    MaterialFactory& operator=(MaterialFactory&&) = delete;
 
     /**
      * The registry is passed through rather than held: a material's textures
-     * load through whichever registry asked for the model, and this factory is
-     * still a singleton shared by all of them until it too is injected.
+     * load through whichever registry asked for the model, and this factory
+     * serves whichever one that is.
      */
     [[nodiscard]] PBRMaterial* CreatePBRMaterial(aiMaterial* mat,
                                                  const std::string& texturesParentFolder,
@@ -33,12 +45,7 @@ public:
     vk::DescriptorSetLayout GetDescriptorSetLayout() const { return *m_SetLayout; }
 
 private:
-    MaterialFactory(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::SamplerHandle sampler);
-
     void CreateDescriptorSetLayout();
-
-private:
-    static MaterialFactory* s_Instance;
 
     vk::raii::DescriptorSetLayout m_SetLayout = nullptr;
 

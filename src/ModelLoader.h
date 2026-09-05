@@ -12,6 +12,7 @@
 struct aiScene;
 
 class AssetRegistry;
+class MaterialFactory;
 class ModelData;
 
 /** Owned by the AssetRegistry that loads through it; it caches nothing itself. */
@@ -24,7 +25,7 @@ public:
      * and inside the caller's load scope rather than in a flush of their own.
      */
     ModelLoader(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::IUploadContext& uploadContext,
-                AssetRegistry& assets);
+                AssetRegistry& assets, MaterialFactory& materialFactory);
 
     [[nodiscard]] std::shared_ptr<ModelData> Load(const std::string& path);
 
@@ -35,4 +36,5 @@ private:
     Hikari::Rhi::IDevice& m_RhiDevice;
     Hikari::Rhi::IUploadContext& m_UploadContext;
     AssetRegistry& m_Assets;
+    MaterialFactory& m_MaterialFactory;
 };

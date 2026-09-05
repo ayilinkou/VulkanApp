@@ -14,9 +14,10 @@ using namespace Hikari::Platform;
 constexpr std::string_view fallbackTexturePrefix = "FallbackTexture";
 
 AssetRegistry::AssetRegistry(Rhi::IDevice& rhiDevice, Rhi::IUploadContext& uploadContext,
-                             const Paths& paths)
+                             const Paths& paths, MaterialFactory& materialFactory)
     : m_UploadContext(uploadContext), m_Paths(paths), m_TextureLoader(rhiDevice, uploadContext),
-      m_CubemapLoader(rhiDevice, uploadContext), m_ModelLoader(rhiDevice, uploadContext, *this)
+      m_CubemapLoader(rhiDevice, uploadContext),
+      m_ModelLoader(rhiDevice, uploadContext, *this, materialFactory)
 {
     LogMsg(LogSeverity::Info, LogAssetRegistry, "Constructed");
 }

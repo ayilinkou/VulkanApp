@@ -590,7 +590,7 @@ public:
             if (m_bCursorVisible && !m_Spec.bNoUi)
                 DrawImGuiFrame();
 
-            ModelManager::Get()->GenerateBatches();
+            m_ModelManager.GenerateBatches(*m_SceneGraph);
 
             const bool bIsLastFrame =
                 g_bShouldClose || (m_Spec.Frames != 0 && (m_FrameCounter + 1) >= m_Spec.Frames);
@@ -861,9 +861,6 @@ private:
         m_Assets = std::make_unique<AssetRegistry>(*m_RhiDevice, *m_UploadContext, m_Paths,
                                                    *m_MaterialFactory);
 
-        // Still a singleton, injected at step 44. Its lifetime used to be the
-        // registry's, and has to be somebody's now that the registry is not one.
-        ModelManager::Init();
         CreatePipelines();
         CreateCommandBuffers();
         CreateGlobalBuffers();
@@ -1004,8 +1001,6 @@ private:
         m_Skybox.reset();
         m_SceneGraph.reset();
         ShutdownImGui();
-        ModelManager::Shutdown();
-
         // The registry's caches assert they are empty, which only holds once
         // everything above has dropped what it borrowed; and the factory owns
         // the descriptor sets those materials were allocated from, so it goes
@@ -1776,7 +1771,7 @@ private:
         vk::CullModeFlags cullMode = vk::CullModeFlagBits::eBack;
 
         // per mesh batch
-        const std::vector<MeshBatch>& batches = ModelManager::Get()->GetOpaqueBatches();
+        const std::vector<MeshBatch>& batches = m_ModelManager.GetOpaqueBatches();
         uint32_t instanceCount = 0;
         for (const MeshBatch& batch : batches)
         {
@@ -1875,7 +1870,7 @@ private:
                               {0});
 
         // per mesh batch
-        const std::vector<MeshBatch>& batches = ModelManager::Get()->GetTransparentBatches();
+        const std::vector<MeshBatch>& batches = m_ModelManager.GetTransparentBatches();
         uint32_t instanceCount = 0;
         for (const MeshBatch& batch : batches)
         {
@@ -2493,7 +2488,7 @@ private:
 
     void UpdateInstanceBuffer(uint32_t frameIndex)
     {
-        const std::vector<InstanceData>& instanceDatas = ModelManager::Get()->GetInstanceDatas();
+        const std::vector<InstanceData>& instanceDatas = m_ModelManager.GetInstanceDatas();
         if (instanceDatas.empty())
             return;
 
@@ -2735,6 +2730,12 @@ private:
     uint32_t m_InstanceCapacity = 0u;
 
     std::unique_ptr<SceneGraph> m_SceneGraph = nullptr;
+
+    /**
+     * Holds no models of its own — it is handed the scene each frame — so it
+     * needs no lifetime beyond this class's.
+     */
+    ModelManager m_ModelManager;
 
     std::unique_ptr<Camera> m_Camera = nullptr;
     std::shared_ptr<Cubemap> m_Skybox = nullptr;

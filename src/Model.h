@@ -18,6 +18,10 @@ public:
     /**
      * Loads through the registry it is handed rather than a global one, so a
      * model belongs to the registry that built it and to no other.
+     *
+     * Inert once built: it announces itself to nothing and is found by the
+     * scene walk that batches it, so a model can exist with no renderer in the
+     * process at all.
      */
     Model(const std::string& path, AssetRegistry& assets);
     ~Model();

@@ -1,47 +1,33 @@
 #include "ModelManager.h"
 
-#include "ModelData.h"
 #include <complex>
 #include <stdexcept>
 
-void ModelManager::Init()
-{
-    if (s_Instance)
-        throw std::runtime_error("Attempting to initialise ModelManager "
-                                 "singleton when instance is not null!");
+#include "Entity.h"
+#include "ModelData.h"
+#include "SceneGraph.h"
 
-    s_Instance = new ModelManager();
-}
-
-void ModelManager::Shutdown()
-{
-    delete s_Instance;
-    s_Instance = nullptr;
-}
-
-void ModelManager::RegisterModel(Model* pModel)
-{
-    m_Models.Pushback(pModel);
-}
-
-void ModelManager::UnregisterModel(Model* pModel)
-{
-    m_Models.Erase(pModel);
-}
-
-void ModelManager::GenerateBatches()
+void ModelManager::CollectRenderables(const SceneGraph& scene)
 {
     m_Drawables.clear();
+
+    for (const std::unique_ptr<Entity>& entity : scene.Entities)
+    {
+        for (const Model* pModel : entity->GetComponents<Model>())
+        {
+            const std::vector<Drawable> drawables = pModel->GetDrawables();
+            m_Drawables.insert(m_Drawables.end(), drawables.begin(), drawables.end());
+        }
+    }
+}
+
+void ModelManager::GenerateBatches(const SceneGraph& scene)
+{
     m_InstanceDatas.clear();
     m_OpaqueBatches.clear();
     m_TransparentBatches.clear();
 
-    // get all drawables
-    for (Model* pModel : m_Models)
-    {
-        const std::vector<Drawable> drawables = pModel->GetDrawables();
-        m_Drawables.insert(m_Drawables.end(), drawables.begin(), drawables.end());
-    }
+    CollectRenderables(scene);
 
     // sort by mesh and material
     std::sort(m_Drawables.begin(), m_Drawables.end());

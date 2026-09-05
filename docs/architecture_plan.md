@@ -2530,6 +2530,17 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
   `LiveCount()` returns to baseline after unloading (a leak check). Unit test constructs a
   `Model` with **no** `ModelManager` in existence.
 - **Size:** L · **Needs:** 42
+- **Landed (2026-09-05).** `ModelManager` is a value member of `Engine` with no `Get()`, no
+  `Init`/`Shutdown` and no model list: `GenerateBatches(const SceneGraph&)` walks the scene it is
+  handed through a private `CollectRenderables`, every frame, as the registration it replaced
+  effectively did. `Model` no longer includes `ModelManager.h` at all — that absence is what the
+  planned "construct a `Model` with no `ModelManager`" test was there to assert, and it is not a
+  test that can be written yet: `Model` lives in `src/` and needs an `AssetRegistry`, so it is
+  reachable from neither a unit nor a GPU test until Stage 8 splits it. The runtime scene swap
+  got more robust rather than less — batches are rebuilt from whatever the scene is now, so a
+  replaced scene needs nothing to have unregistered itself. Of the verify list, output-unchanged
+  and the leak check are covered (`AssetRegistry`'s destructor asserts every cache is empty, on
+  every debug run); **reload is not reachable without input scripting**, which arrives at 40b.
 
 ### 45. Deterministic clock
 - **Do:** `IClock` with `RealClock` and `FixedStepClock`. In `bDeterministic` mode force

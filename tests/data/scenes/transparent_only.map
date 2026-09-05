@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!-- One transparent cube, so the weighted-blended path is the only one drawing. -->
+<scene>
+	<entity name="DirLight">
+		<transform position="0 0 0" rotation="0 0 0" scale="1 1 1" />
+		<light type="1" intensity="5" direction="0.5 -1 0.5" />
+	</entity>
+	<entity name="TransparentCube">
+		<transform position="0 0 0" rotation="0 0 0" scale="1 1 1" />
+		<model path="models/cube_transparent.gltf">
+			<transform position="0 0 0" rotation="0 0 0" scale="1 1 1" />
+		</model>
+	</entity>
+</scene>

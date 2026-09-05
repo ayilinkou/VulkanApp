@@ -1,0 +1,33 @@
+{
+  "frames": 1000,
+  "counters": {
+    "frame": {
+      "drawCalls": 22,
+      "batches": 22,
+      "instances": 23,
+      "barriers": 14,
+      "barrierCalls": 9
+    },
+    "run": {
+      "validationErrors": 0,
+      "validationWarnings": 0,
+      "uploadSubmissions": 4
+    }
+  },
+  "timings": {
+    "startupMs": 2439.8191,
+    "firstFrame": { "frameMs": 8.1087, "cpuMs": 7.8363 },
+    "frameMs": { "mean": 1.5668, "p99": 2.2710, "min": 1.1272, "max": 14.7309 },
+    "cpuMs": { "mean": 1.3489, "p99": 1.9224, "min": 0.9231, "max": 14.6303 }
+  },
+  "run": {
+    "fixedDt": true,
+    "headless": false,
+    "noUi": true,
+    "width": 1920,
+    "height": 1080,
+    "jobCount": 15,
+    "presentMode": "mailbox",
+    "buildConfig": "debug"
+  }
+}

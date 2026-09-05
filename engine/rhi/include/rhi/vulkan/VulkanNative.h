@@ -105,6 +105,15 @@ vk::Semaphore GetSemaphore(IDevice& device, SemaphoreHandle handle);
 [[nodiscard]] std::unique_ptr<ICommandList> WrapCommandList(IDevice& device, vk::CommandBuffer cmd);
 
 /**
+ * The buffer a command list records into.
+ *
+ * The inverse of WrapCommandList, and it exists for the same kind of caller:
+ * ImGui's Vulkan backend takes a VkCommandBuffer by value, and there is no
+ * neutral shape for that until the RHI records draws itself.
+ */
+vk::CommandBuffer GetNative(ICommandList& commandList);
+
+/**
  * vk::Format for a neutral one and back.
  *
  * Needed because format selection and pipeline creation are still Vulkan-shaped

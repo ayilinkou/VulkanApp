@@ -4,7 +4,7 @@ HikariEngine — a cross-platform game engine (Windows / Linux) built on Vulkan,
 with a D3D12 backend planned later. C++20, CMake + vcpkg, Slang shaders.
 
 The engine is mid-refactor from a single-executable prototype into a layered library set.
-Six reference documents drive that work — read the relevant section before proposing
+Five reference documents drive that work — read the relevant section before proposing
 architecture, and prefer them over inventing a design:
 
 - `docs/architecture_plan.md` — target architecture (Part II), test strategy
@@ -24,12 +24,6 @@ architecture, and prefer them over inventing a design:
   anything under `engine/rhi/include/`. Its §10 lists what should eventually be promoted into
   the architecture plan; retiring it is a deliberate future decision, not a step in the
   roadmap, though `backend_readiness_plan.md`'s B6 proposes itself as the moment.
-- `docs/stage7_plan.md` — **temporary, and deleted when Stage 7 completes.** How steps 40b
-  and 41–47 are to be built: the decisions settled before the stage started, the order they
-  run in (41 → 47, then 40b), what is deferred and what each deferral blocks, and the
-  amendments the architecture plan is owed as the work lands. Where it and Part IV disagree,
-  it wins — it was written later; where it and the RHI plan disagree about the RHI's seam,
-  the RHI plan wins.
 - `docs/backend_readiness_plan.md` — **retained, like the RHI plan and for the same reason.**
   Stage 7.5: the four seams a second backend needs and Stage 5 did not build — submission and
   command-list ownership, rendering scope, bind groups, pipelines, and draw/dispatch recording
@@ -127,8 +121,8 @@ even when a task feels finished. Reading (`git status`, `git log`, `git diff`) i
 | 5 — RHI extraction | R1–R17 | ✅ done (`Engine::RHI` — backend-neutral API, handle-based resources, batched uploads, growable descriptors, a pipeline cache, and GPU tests) |
 | 6 — Headless capability | 35–40a | ✅ done (`HeadlessPlatform`, `--headless`, the present-layout seam) |
 | Cleanup between 6 and 7 | — | ✅ done (`Hikari::` namespace + `namespace_check`, CI's `static-checks` job, the `counters`/`timings`/`run` report + `--no-ui`, `docs/backlog.md`) |
-| **7 — Engine shell + DI** | **40b, 41–47** | **next** — **CI goal met at step 47** |
-| 7.5 — Backend readiness | B1–B6 | not started — **plan written, grill pending** (`docs/backend_readiness_plan.md`) |
+| 7 — Engine shell + DI | 40b, 41–47 | ✅ done (`engine/engine` + `engine/asset` + `engine/editor`, `HikariEditor` + `HikariHeadless`, injected subsystems, the event seam, and headless scene tests in CI) |
+| **7.5 — Backend readiness** | **B1–B6** | **next** — **plan written, grill pending** (`docs/backend_readiness_plan.md`) |
 | 8+ — Frame graph, DOD, scalability | 48–76 | not started; 48–56 partly superseded by Stage 7.5 |
 
 Update this table when a stage completes.
@@ -201,6 +195,14 @@ configured tree. `HeaderSelfContainment` runs in the debug job of each OS, becau
 run in all six. `precommit.sh` runs the same set locally in one sequence, so its ordering no
 longer mirrors CI's job layout.
 
+**The GPU and scene tests run on Linux against lavapipe**, pinned with `VK_DRIVER_FILES`
+rather than discovered — enumeration order is not a stable identifier. `ctest -L gpu` runs in
+all three Linux jobs including release, because `RhiTestFixture.h` enables validation
+unconditionally, so a release run asserts everything a debug one does. `ctest -L scene` runs
+in the debug and ASan jobs only: the engine gates validation on `NDEBUG`, so a release run
+would report zero validation errors trivially. Promoting it is a two-line change once
+validation is runtime-selectable (`backlog.md`).
+
 Everything that *verifies* the tree lives in `tests/scripts/`; `scripts/` holds the things
 that build or change it (`build.sh` at the root, `format.sh`, `precommit.sh`, and the
 Windows-only `envsetup.bat`). Each script has a `.bat` equivalent beside it. Scripts resolve
@@ -211,9 +213,19 @@ debug-linux build for clangd.
 Asset paths resolve against a content root, not the CWD, so the app runs from anywhere:
 
 ```bash
-./build/ninja-debug-linux/HikariEngine --scene scenes/test_scene.map   # content-relative
-./build/ninja-debug-linux/HikariEngine --content /path/to/content      # explicit root
-./build/ninja-debug-linux/HikariEngine --help
+./build/ninja-debug-linux/HikariEditor --scene scenes/test_scene.map   # content-relative
+./build/ninja-debug-linux/HikariEditor --content /path/to/content      # explicit root
+./build/ninja-debug-linux/HikariEditor --help
+
+# The same engine with no window, rendering into an offscreen target. --frames
+# is required: nothing else can end the run.
+./build/ninja-debug-linux/HikariHeadless --frames 100 --screenshot --report
+
+# Both binaries replay an input script: key presses, resizes, captures and quit,
+# delivered on the frames it names. The editor merges it with real input, so a
+# scripted run that failed in CI can be watched.
+./build/ninja-debug-linux/HikariHeadless --input tests/data/input/orbit.txt
+./build/ninja-debug-linux/HikariEditor  --input tests/data/input/orbit.txt
 ```
 
 `Paths` (in `engine/platform`) resolves the root in priority order: `--content` →
@@ -236,9 +248,14 @@ tests/scripts/baseline_test.sh   # --scene (default scenes/test_scene.map) --fra
 Output goes to `tests/screenshots/` and `tests/reports/` (both gitignored). Compare against
 the committed `tests/baseline/`. Two signals, and **both are usable**:
 
-- **The report's `counters`** — `validationErrors`, `validationWarnings`, `drawCalls`,
-  `batches`, `instances`, `barriers`, `barrierCalls`. These are expectations: they must match
-  the committed baseline exactly, and validation errors must stay at 0.
+- **The report's `counters`**, split by scope. `counters.frame` — `drawCalls`, `batches`,
+  `instances`, `barriers`, `barrierCalls` — describes the last frame drawn, which is the frame
+  a capture shows. `counters.run` — `validationErrors`, `validationWarnings`,
+  `uploadSubmissions` — accumulates over the whole run. Both are expectations: they must match
+  the committed baseline exactly, and validation errors must stay at 0. `uploadSubmissions` is
+  what guards the asset layer's batching from a distance — one scene's textures loaded inside
+  one load scope is a handful of submissions, and a number that tracks the texture count means
+  the scoping broke.
 - **The report's `timings`** — `startupMs`, `firstFrame`, and `mean`/`p99`/`min`/`max` for
   both `frameMs` (wall clock) and `cpuMs` (the same minus what the frame spent blocked).
   These are measurements, not expectations: they vary with the machine, so read them for
@@ -252,30 +269,46 @@ the committed `tests/baseline/`. Two signals, and **both are usable**:
   script forces `--resolution 1920x1080 --borderless`, so captures come out at a fixed extent
   instead of at whatever size the window manager chose. **Never byte-compare** — PNG encoding
   is not reproducible, so `cmp`/`md5sum` on a pixel-identical pair still differs. Compare
-  decoded pixels (`PIL.ImageChops.difference(a, b).getbbox() is None`).
+  decoded pixels, and **convert to RGB first**:
+
+  ```python
+  a = Image.open(before).convert("RGB")   # not RGBA
+  b = Image.open(after).convert("RGB")
+  assert ImageChops.difference(a, b).getbbox() is None
+  ```
+
+  The conversion is the load-bearing part. `Image.getbbox()` defaults to `alpha_only=True`, so
+  on an RGBA pair it inspects **only the alpha channel** — and every capture this engine writes
+  is fully opaque, which makes the check pass for two images of completely different scenes.
+  `.convert("RGB")` removes the channel it would look at; `getbbox(alpha_only=False)` is the
+  other way to say it. This was wrong here for a while and nobody noticed, because a check that
+  always passes looks exactly like a check that keeps passing.
 
 `--borderless` rather than `--resolution` alone is what makes that work: a window size is a
 request the window system may refuse, and a tiling compositor always does. The rationale is
 in the script, next to the flags.
 
-`--headless` renders into an offscreen target with no window at all. It requires
-`--frames` — nothing else can end the run — and cannot be combined with `--borderless` or
-`--fullscreen`. ImGui still draws, so a headless capture and a windowed one of the same frame
-come out pixel-identical.
+`HikariHeadless` renders into an offscreen target with no window at all. It needs something
+that can end the run — `--frames`, or an `--input` script containing `quit` — and takes
+`--resolution` for the target's extent rather than a window's. It has no window-mode flags, because the binary *is* the mode: the
+`--headless` flag it replaced existed only so one binary could refuse its own options. The UI
+still draws, so a headless capture and an editor one of the same frame come out
+pixel-identical — verified at step 46 and the thing step 47's CI tests rest on.
 
 ---
 
 ## Repository layout
 
 ```
-src/             # the application — one class per file, plus main.cpp (App + everything unmoved)
-src/shaders/     # Slang source (.slang, .slangh); compiled to <exe dir>/shaders/*.spv
+apps/editor/     # HikariEditor — SDL window, the UI attached, one main.cpp
+apps/headless/   # HikariHeadless — no window, offscreen target, one main.cpp
 engine/core/     # Engine::Core static lib — Log, Timer, MyMacros, SwapbackArray,
                  #   ThreadPool, IJobSystem + SerialJobSystem + SharedQueueJobSystem,
                  #   Handle + HandlePool, Extent2D + Extent3D (one definition, used
                  #   by Platform and the RHI alike).
 engine/platform/ # Engine::Platform static lib — IPlatform/SdlPlatform, Paths, FileSystem,
                  #   CommandLine
+engine/asset/   # Engine::Asset static lib — AssetCache, PNG encoding
 engine/rhi/      # Engine::RHI static lib — the graphics abstraction.
                  #   include/rhi/         backend-neutral: IDevice, ICommandList, barriers,
                  #                        handles, descs, IUploadContext, IPipelineCache
@@ -283,10 +316,25 @@ engine/rhi/      # Engine::RHI static lib — the graphics abstraction.
                  #                        the native escape hatch plus what Stages 6-8 have
                  #                        not taken over yet. Frozen; see below.
                  #   src/vulkan/          the backend. Invisible outside the module.
+engine/engine/   # Engine::Engine static lib — the engine, and everything not yet split out.
+                 #   include/engine/      what an app sees: IEngine, RunApp, RunSpec,
+                 #                        EngineConfig, RunReport, IUiBackend
+                 #   src/                 the renderer, the scene and the asset types, private
+                 #                        to the module until Stage 8 promotes them into
+                 #                        Render and Scene modules of their own
+                 #   src/shaders/         Slang source (.slang, .slangh); compiled to
+                 #                        <exe dir>/shaders/*.spv
+engine/editor/   # Engine::Editor static lib — the UI stack. Above Engine: an app builds
+                 #   VulkanUiBackend and hands it over as an IUiBackend
 cmake/           # EngineModule.cmake (engine_module), Testing.cmake (engine_test),
                  #   HeaderSelfContainment.cmake, Warnings.cmake
 tests/unit/      # Catch2 tests, CTest label "unit" — no GPU, run by CI
-tests/gpu/       # Catch2 tests needing a real device, CTest label "gpu" — not run by CI
+tests/gpu/       # Catch2 tests needing a real device, CTest label "gpu" — run by CI on
+                 #   Linux against lavapipe
+tests/scene/     # real headless runs of the engine asserting on the RunReport they
+                 #   return, CTest label "scene" — run by CI on the two Linux debug jobs
+tests/data/      # a content root of its own: two hand-authored glTF cubes and the
+                 #   scenes built from them, so expected counters are derivable
 tests/support/   # shared test helpers (TestPaths.h, CaptureStream.h, RhiTestFixture.h)
 content/         # runtime content root — models/ scenes/ textures/ shaders/ (.spv is gitignored)
 ```
@@ -295,7 +343,8 @@ content/         # runtime content root — models/ scenes/ textures/ shaders/ (
 
 Source lists are explicit, not globbed — a new `.cpp` will silently not build if you forget:
 
-- `src/*.cpp` → append to `SOURCES` in the root `CMakeLists.txt`.
+- `engine/engine/src/*.cpp` → append to `engine_module(Engine SOURCES ...)`, like any other
+  module. There is no application source list any more: each app is one `main.cpp`.
 - `engine/<module>/src/*.cpp` → append to that module's `engine_module(<Name> SOURCES ...)`
   call in `engine/<module>/CMakeLists.txt`.
 - `tests/unit/**/*.cpp` → append to the matching `engine_test(...)` call in
@@ -342,7 +391,7 @@ Two non-obvious rules that the whole test strategy rests on:
 under `engine/rhi/include/rhi/` may name a Vulkan or VMA type; the backend lives in
 `engine/rhi/src/vulkan/`, where nothing outside the module can reach it. The one exception is
 `engine/rhi/include/rhi/vulkan/`, which is *frozen*: seven headers covering what Stages 6–8
-have not taken over yet, and sixteen allowlisted include sites outside the module. Adding
+have not taken over yet, and eighteen allowlisted include sites outside the module. Adding
 either fails `rhi_boundary_check`, and so does leaving an allowlist entry behind after its
 include goes — the list is meant to shrink to nothing. New entries are argued for in
 `cmake/RhiBoundaryCheck.cmake`, next to the reason each existing one is still there.

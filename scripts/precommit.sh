@@ -23,6 +23,7 @@ tests/scripts/namespace_check.sh && \
 tests/scripts/build_tests.sh "$PRESET" && \
 tests/scripts/run_unit_tests.sh "$PRESET" && \
 tests/scripts/run_gpu_tests.sh "$PRESET" && \
+tests/scripts/run_scene_tests.sh "$PRESET" && \
 tests/scripts/format_check.sh && \
 
 echo "Precommit succeeded!"

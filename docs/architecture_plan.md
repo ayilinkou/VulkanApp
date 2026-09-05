@@ -77,7 +77,7 @@ supports (a) headless + automated runtime testing, (b) data-oriented performance
 | C++ lines | ≈ 7,100 |
 | `src/main.cpp` | 2,453 lines (**≈ 35% of all C++**) |
 | Slang shader files | 7 (5 `.slang`, 2 `.slangh`), ≈ 860 lines |
-| Build targets | 1 executable (`HikariEngine`) + 1 shader custom target + 1 fetched dep |
+| Build targets | 1 executable (`HikariEngine`) + 1 shader custom target + 1 fetched dep — now two, `HikariEditor` and `HikariHeadless`, over six modules |
 | Test targets | **0** |
 | CI jobs | 7 (configure + build only, 3 OS × Debug/Release + Linux ASan) |
 | Directory nesting under `src/` | 1 level (`src/shaders/`); everything else is flat |
@@ -398,13 +398,13 @@ Nine CMake targets. Arrows point to allowed dependencies; nothing else may be li
 | `Core` | static lib | *(nothing but std + glm)* | Vulkan, SDL, assimp, ImGui |
 | `Platform` | static lib | `Core` | Vulkan, rendering |
 | `RHI` | static lib | `Core`, `Platform`, Vulkan, VMA | assimp, ImGui, scene concepts |
-| `Assets` | static lib | `Core`, `Platform`, `RHI`, assimp, stb | ECS, render passes |
-| `Scene` | static lib | `Core`, `Platform`, `Assets`, pugixml | `RHI`, Vulkan |
-| `Render` | static lib | `Core`, `RHI`, `Assets` | ECS internals (receives snapshots) |
+| `Asset` | static lib | `Core`, `Platform`, `RHI`, assimp, stb | ECS, render passes |
+| `Scene` | static lib | `Core`, `Platform`, `Asset`, pugixml | `RHI`, Vulkan |
+| `Render` | static lib | `Core`, `RHI`, `Asset` | ECS internals (receives snapshots) |
 | `Engine` | static lib | all of the above | ImGui |
 | `Editor` | static lib | `Engine`, ImGui, ImGuiFileDialog | — |
-| `HikariEngine` | exe | `Engine`, `Editor` | — |
-| `HikariEngineHeadless` | exe | `Engine` | ImGui, `Editor` |
+| `HikariEditor` | exe | `Engine`, `Editor` | — |
+| `HikariHeadless` | exe | `Engine`, `Editor` | a window system |
 | `Tests*` | exe | whichever layer is under test | — |
 
 Note the two important non-dependencies:
@@ -1542,7 +1542,7 @@ is the moment headless becomes real, and it is the highest-leverage phase in the
 - Delete the singletons in favour of constructor injection (mechanical but touches many
   files — do it here, while the call sites are already moving).
 
-**Exit:** `HikariEngineHeadless --scene content/scenes/test_scene.map --frames 5 --headless`
+**Exit:** `HikariHeadless --scene content/scenes/test_scene.map --frames 5`
 runs and prints a `RunReport`. Add `scene_launch` to CI. **The user's stated CI goal is met
 at the end of this phase**, before any DOD work.
 
@@ -1739,6 +1739,12 @@ Purpose: make every later step objectively checkable. All changes are additive a
   `1/60` and derive `m_RunTime` as `frameIndex / 60.f`. Add 2–3 hardcoded camera presets
   (position + rotation) selected by `--camera-preset N`, applied after `Init()` and with
   input ignored while a preset is active.
+- **Amended (2026-09-05): a preset no longer ignores input.** It blocked input because the only
+  input then was a hand on a keyboard, which a comparable run could not tolerate. Step 40b's
+  scripted input is as deterministic as the preset itself, so `--camera-preset N --input
+  script.txt` — start from a known transform, then move repeatably — is a combination worth
+  having. What keeps a capture run pinned is that it passes no input at all, not the flag. The
+  cursor check is what now separates driving the camera from driving the UI.
 - **Why:** `m_RunTime` feeds `GlobalBuffer.Time`, which drives cloud wind animation. Without
   this, two runs never produce the same image and screenshot comparison is worthless.
 - **Verify:** Run the same command twice; the two `--screenshot` outputs (after step 5) are
@@ -2345,9 +2351,11 @@ raises a validation error on its last barrier. `App` has to stop hardcoding it.
 
 #### ImGui runs headless
 
-The ImGui panel is **in the committed baseline screenshot** — `m_bCursorVisible` defaults to
-`true`, so `DrawImGuiFrame()` runs every frame and the panel occupies a 423×443 block in the
-top-left.
+The ImGui panel **was** in the committed baseline screenshot when this was written —
+`m_bCursorVisible` defaults to `true`, so the panel drew every frame and occupied a 423×443
+block in the top-left. It is not any more: `tests/scripts/baseline_test.sh` passes `--no-ui`,
+for the reason the next paragraph gives. The pass still records either way, so the counters
+the baseline pins are unaffected.
 
 **Decided: it renders, through the Vulkan backend only.** The reason is coverage: a headless
 CI run should be exercising ImGui's bring-up and drawing, not skipping a fifth of the frame.
@@ -2438,6 +2446,37 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
   `tests/data/input/orbit.txt` and produces the frame count, resizes and screenshot the
   script asks for.
 - **Size:** M–L · **Needs:** 40a
+- **Landed (2026-09-05).** `PlatformEvent` and `Key` in `engine/platform`, `PumpEvents` and
+  `IsKeyDown` on `IPlatform`. `SdlPlatform` translates SDL's events and answers held-key
+  queries; `HeadlessPlatform` replays an `InputScript` through the same path, tracking held
+  keys from the script's own `key.down`/`key.up` and applying a scripted resize to its own
+  extent. Nothing above the seam names SDL any more — `SDL_PollEvent` and
+  `SDL_GetKeyboardState` are gone from the engine.
+  - **`PlatformEvent::pNative` is the one escape hatch**, carrying the window system's own
+    event for the UI's platform backend. Null for a scripted event, which is how the UI
+    backend knows to leave it alone. The same shape as `GetNativeWindowHandle`, and it goes
+    when the UI's input path stops naming a window system.
+  - **The script format is §14's**, minus `camera.set`: a camera is engine state rather than
+    platform input, and `--camera-preset` already places it deterministically. An unknown
+    command is an error rather than a silent skip — a typo that quietly does nothing turns a
+    test into a test of nothing.
+  - **A capture can now be asked for at a chosen frame**, not only at the last one, and `Run`
+    returns whatever was staged however it was asked for. That is what makes `screenshot` at
+    frame 12 mean anything.
+  - **Both binaries take `--input`.** The editor merges a script with real input — same seam,
+    same frame counting — so a scripted run that failed in CI can be watched rather than only
+    asserted on. A scripted resize there asks the window system to resize the window and lets
+    the resize event that follows be the window system's own, which is a request it may refuse;
+    synthesising one would report a size the window did not have.
+  - **`--frames` is no longer required when the script quits.** Something has to be able to end
+    a run with no window, and a script that quits is as good an answer as a frame count.
+- **Verified:** `--input tests/data/input/orbit.txt` ends the run on the script's `quit`
+  (15 frames, not the 20 `--frames` allowed), resizes the target to 320×240 mid-run and
+  captures at that size, with zero validation errors — so a resize and the target recreation
+  it forces are now exercised with no display attached. Eight parser cases in `platform_tests`
+  and a replay case in `scene_tests` cover it. The windowed path was **not** re-verified by
+  hand: the baseline run exercises the translated event loop and comes out pixel-identical,
+  but nobody pressed a key.
 - **Note:** deliberately split out of step 40 and **deferred here from Stage 6**, next to the other
   loop-shaped work (`IClock`, `RunSpec`). Nothing in steps 41–47 needs it except the scripted
   half of 47's tests: `--frames N --screenshot` requires no input at all, so 40a alone is
@@ -2453,6 +2492,27 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
   `--frames-in-flight 1` and `3` and confirm both render correctly — a good latent-bug
   detector, since it's currently a compile-time constant baked into array sizes.
 - **Size:** L · **Needs:** 23, 35
+- **Landed (2026-09-05), with four deviations worth keeping:**
+  - **The `Engine` class stays in `src/main.cpp`**, in `namespace Hikari::Engine`, and moves to
+    `engine/engine` at step 46. It reaches for sixteen `src/` headers, which an engine module
+    cannot include, and step 43 requires `MaterialFactory` to stay in `src/` while `Engine`
+    constructs it — so the class cannot leave before the things it holds do. The module was
+    created now and holds `EngineConfig`, `RunSpec`, `RunReport`, `CapturedFrame`, `RunResult`,
+    `CameraPresetData`/`kCameraPresets`, and the option parsing. Same pattern this step's own
+    §41 note already applies to `WriteRunReport`: name the eventual home, move it when the step
+    that owns the move arrives.
+  - **`ParseRunSpec` is `ParseEngineOption` + `PrintEngineUsage`**, taking one option at a time
+    and filling `EngineConfig` alongside `RunSpec`. An app has flags of its own to interleave,
+    so it walks the options once and offers each to the engine first; and `--frames-in-flight`
+    configures the engine rather than the run, so one entry point fills both.
+  - **`RunSpec` carries `bRecordTimings`** as well as `bCaptureFinalFrame`. The frame-timing
+    samples were collected only when `--report` was passed, and the engine can no longer see
+    that flag — without the field it would either lose the condition or accumulate two floats
+    per frame forever in an unbounded run.
+  - **ImGui's `ImageCount` is `max({2u, GetImageCount(), FramesInFlight})`**, not
+    `max(2u, GetImageCount())`. The ring is reused every `ImageCount` frames, so a two-image
+    swapchain with three frames in flight would be overwritten while an earlier frame still
+    read it. `--screenshot` and `--report` stayed app flags, since the paths are the app's.
 - **Note:** this step used to name `WIDTH` and `HEIGHT` as well. They no longer exist — the
   window-mode work replaced them with `WindowDesc` plus `--resolution`, where zero means "ask
   the display". `RunSpec` should carry the resolution and the window mode rather than
@@ -2467,11 +2527,38 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
 - **Verify:** Output unchanged. Unit test constructs **two** independent registries and
   confirms their caches are separate (impossible today).
 - **Size:** L · **Needs:** 41
+- **Landed (2026-09-05), with two deviations:**
+  - **`engine/asset` holds `AssetCache` only; `AssetRegistry` stays in `src/`.** The registry
+    caches `Texture`, `Cubemap` and `ModelData`, and its implementation needs those complete —
+    they are `src/` types until Stage 8 splits them into `TextureData`/`MeshData`. Same
+    constraint that kept `Engine` in `src/` at step 41, and it resolves the same way: the
+    registry follows its types into the module rather than dragging them in early.
+  - **The two-registries test is a two-caches test.** `AssetRegistry` is not linkable from
+    `tests/` while it lives in `src/` and needs a device, so the independence the step is about
+    — no process-wide table behind the caches — is asserted against `AssetCache` directly, in
+    `tests/unit/asset/AssetCacheTests.cpp`. The registry-level test arrives with the registry.
+
+  What did land in full: the `Get()` singletons for `ResourceManager`, `TextureLoader`,
+  `CubemapLoader` and `ModelLoader` are gone, the registry owns the three loaders and is
+  constructor-injected through `XmlParser::LoadScene` → `Model` and through `ModelLoader` →
+  `MaterialFactory::CreatePBRMaterial` → `PBRMaterial`, and `counters` split into
+  `counters.frame` and `counters.run` with `uploadSubmissions` in the latter. `ModelManager`'s
+  `Init`/`Shutdown` moved to `Engine`, where they wait for step 44.
 
 ### 43. Inject `MaterialFactory`
-- **Do:** Same treatment; owned by `AssetRegistry`.
+- **Do:** Same treatment; owned by `Engine` and passed to the loaders that need it.
 - **Verify:** Output unchanged.
 - **Size:** M · **Needs:** 42
+- **Landed (2026-09-05), owned by `Engine` rather than by `AssetRegistry`.** The factory has
+  callers on both sides of the asset/renderer line: `ModelLoader` builds materials with it while
+  loading, and the opaque and transparent pipeline layouts are built against its descriptor set
+  layout. Registry ownership would put a `vk::DescriptorSetLayout` on `engine/asset`' public
+  surface — and an `rhi/vulkan/` allowlist entry on a module that otherwise needs none — for the
+  sake of the renderer's use of it. `Engine` builds it before the registry and passes it through
+  to `ModelLoader`, the one loader that needs it; it is destroyed after the registry, since the
+  materials that hold descriptor sets from its allocator die with the models. It stays in `src/`:
+  it is not an assets type, and Stage 8 relocates materials and pipelines together, which is when
+  the materials-versus-pipeline-layouts question has to be answered anyway.
 
 ### 44. Inject `ModelManager` and break `Model`'s back-pointer
 - **Do:** The awkward one. `Model`'s constructor currently calls `ModelManager::Get()->
@@ -2482,6 +2569,17 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
   `LiveCount()` returns to baseline after unloading (a leak check). Unit test constructs a
   `Model` with **no** `ModelManager` in existence.
 - **Size:** L · **Needs:** 42
+- **Landed (2026-09-05).** `ModelManager` is a value member of `Engine` with no `Get()`, no
+  `Init`/`Shutdown` and no model list: `GenerateBatches(const SceneGraph&)` walks the scene it is
+  handed through a private `CollectRenderables`, every frame, as the registration it replaced
+  effectively did. `Model` no longer includes `ModelManager.h` at all — that absence is what the
+  planned "construct a `Model` with no `ModelManager`" test was there to assert, and it is not a
+  test that can be written yet: `Model` lives in `src/` and needs an `AssetRegistry`, so it is
+  reachable from neither a unit nor a GPU test until Stage 8 splits it. The runtime scene swap
+  got more robust rather than less — batches are rebuilt from whatever the scene is now, so a
+  replaced scene needs nothing to have unregistered itself. Of the verify list, output-unchanged
+  and the leak check are covered (`AssetRegistry`'s destructor asserts every cache is empty, on
+  every debug run); **reload is not reachable without input scripting**, which arrives at 40b.
 
 ### 45. Deterministic clock
 - **Do:** `IClock` with `RealClock` and `FixedStepClock`. In `bDeterministic` mode force
@@ -2492,6 +2590,20 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
 - **Caveat:** Batch order still depends on pointer values via `Drawable::operator<`
   (`Drawable.h:16-22`), so ordering is only stable within a single process. Fully
   deterministic ordering arrives at step 58.
+- **Landed (2026-09-05), at the size the stage-7 plan cut it to: `IClock` only.**
+  `engine/core/include/core/Clock.h` holds `IClock`, `RealClock` and `FixedStepClock`, where
+  §9's target layout already put them. `Engine` owns one, chosen by `--fixed-dt`, and reads it
+  for the simulation timestep alone — the run report's timings still read the steady clock
+  directly, because a measurement a fixed step silently rewrote would be worthless.
+  `Elapsed()` reports the time as of the last `Tick()` rather than as of now, which is both what
+  the old code did and what two readers within one frame need. No `SerialJobSystem` forcing:
+  nothing today can make job order affect output. No `--seed`: nothing in `src/` or `engine/`
+  draws a random number, so the flag would have had nothing to seed.
+- **Verified across processes, and the caveat above still stands.** Two windowed runs and two
+  offscreen runs each produced identical counters and pixel-identical captures, and all four
+  match the committed baseline. That is stronger than the caveat promises — the same build
+  allocates in the same order, so the pointer-value sort happens to agree run to run — but it is
+  an observation about this build, not a guarantee. Step 58 is what turns it into one.
 - **"Force FIFO in deterministic mode" was dropped from this step, deliberately.** It does
   not do what it looks like it does. Present mode affects *timing*, not pixels — the loop
   renders every frame either way — so it buys nothing for byte-identical screenshots. And for
@@ -2505,7 +2617,7 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
 - **Do:** `apps/hikariengine/main.cpp` (SDL + Editor, ~40 lines) and
   `apps/headless/main.cpp` (`HeadlessPlatform` + `OffscreenTarget`, ~30 lines).
   `src/main.cpp` ceases to exist.
-- **Verify:** **`HikariEngineHeadless --scene content/scenes/test_scene.map --frames 5
+- **Verify:** **`HikariHeadless --scene content/scenes/test_scene.map --frames 5
   --report r.json --screenshot h.png` runs with no window and exits 0.** Compare `h.png`
   against a windowed capture of the same scene, **both taken with `--no-ui`**, and require
   them to be pixel-identical rather than merely close: with the panel suppressed the only
@@ -2519,10 +2631,39 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
   headless — see 40a — so this costs no CI coverage of it; step 47's assertions run against a
   build that drew the panel.
 - **Size:** M · **Needs:** 40a, 41, 44 (`--no-ui` already exists)
+- **Landed (2026-09-05), and it was not M.** This step inherited the move step 41 deferred: the
+  engine could not be shared by two binaries while it lived in `src/main.cpp`. What happened:
+  - **`src/` no longer exists.** Everything in it moved to `engine/engine/src/`, private to the
+    module, exactly as the stage-7 plan's cross-cutting note anticipated — renderer internals
+    live in `engine/engine` until Stage 8 draws the Render/Scene boundary deliberately. Stage 8
+    then promotes files out of that directory rather than migrating them out of an application.
+    The shaders went with them, to `engine/engine/src/shaders/`, because `common.slangh`
+    includes `../Common.h` and that relative path had to keep resolving.
+  - **The engine class lives wholly in `Engine.cpp`**, with no header. `namespace_check` forbids
+    using-directives in headers, and a header carrying the class would have meant qualifying
+    every name across 2,000 lines of code scheduled for demolition. Nothing else in the module
+    needs the class: apps see `IEngine`, `CreateEngine` and `EngineDesc`.
+  - **`RunApp` in `engine/engine` holds what both binaries do** once they have a platform —
+    diagnostics, the job system, the content root, the engine, the files a run leaves behind,
+    and the exit code. That is what keeps each `main.cpp` to its own flags and its own platform.
+    `WriteRunReport` moved here and PNG encoding to `engine/asset`, as §41 said they would.
+  - **`engine/editor` holds `VulkanUiBackend` only.** `IUiBackend` is declared in
+    `engine/engine`, because §8's layering puts Editor *above* Engine: the app builds the
+    backend and hands it over. The panels stay in the engine — they read the camera, the scene
+    graph and the model manager — and become `EditorLayer` when Stage 8 moves what they read.
+  - **One new escape-hatch accessor**, `Rhi::Vulkan::GetNative(ICommandList&)`, because ImGui's
+    backend takes a `VkCommandBuffer` by value. B5 retires it with the rest of the recording
+    path. The allowlist went from sixteen sites to eighteen: `main.cpp`'s three became
+    `Engine.cpp`'s three plus the editor's one.
+- **Verified:** an editor capture and a headless capture of the same scene at 1920x1080, both
+  `--no-ui`, are pixel-identical; the committed baseline's counters, run block and pixels all
+  match through `HikariEditor`; `precommit.sh` green, including the header self-containment
+  check repointed from `src/` to the module's private headers.
 
 ### 47. Wire headless tests into CI
-**How this step is built is settled in `docs/stage7_plan.md`**, which supersedes the Do and
-Verify below where they differ: device selection is `VK_DRIVER_FILES` (§10.3), the two new jobs
+**How this step was built was settled in `docs/stage7_plan.md`**, the stage's own planning
+document, retired when the stage completed. It superseded the Do and Verify below where they
+differ: device selection is `VK_DRIVER_FILES` (§10.3), the two new jobs
 became steps inside the existing ubuntu matrix jobs, and the scene set gained an instancing case
 and a real-content one.
 - **Do:** `tests/data/scenes/{empty,single_cube,two_materials,lights_only,transparent_only}.map`
@@ -2532,6 +2673,36 @@ and a real-content one.
 - **Verify:** **CI is green with a headless scene launched and asserted under ASan.**
   Deliberately break a barrier in a PR and confirm CI catches it.
 - **Size:** L · **Needs:** 39, 46
+- **Landed (2026-09-05), as the stage-7 plan specified it.** Eight cases under a new `scene`
+  CTest label, in `tests/scene/SceneLaunchTests.cpp`: seven run the engine **in-process** —
+  `CreateEngine`, `Run`, assert on the returned `RunReport`, no file and no JSON parser — and
+  one launches the real `HikariHeadless` with `--strict-validation` to cover argument parsing,
+  the platform and UI it builds, and the files it writes. Every in-process case runs its scene
+  **twice and compares** the counters and the captured pixels, which is the determinism check;
+  the panel is suppressed with `bNoUi` because it prints the frame time and the FPS, and the
+  pass still records either way, so the counters remain those of a shipping frame. Test data is
+  `tests/data/` as its own content root: two hand-authored ~2.7 KB glTF cubes with the buffer
+  base64-embedded, and six scenes built from them, plus one case running the shipped
+  `content/scenes/test_scene.map`. CI installs `mesa-vulkan-drivers` and pins lavapipe with
+  `VK_DRIVER_FILES`; `ctest -L gpu` runs in all three Linux jobs and `ctest -L scene` in the
+  debug and ASan ones.
+- **Two defects the suite found on its first run, both fixed here:**
+  - **The dynamic cull mode was never set for a single-sided material.** The opaque recorder
+    tracked it starting from an assumed `eBack`, but a command buffer begins with no dynamic
+    cull mode at all, so a batch that wanted `eBack` never called `vkCmdSetCullMode` and its
+    draw was invalid (`VUID-vkCmdDrawIndexed-None-07840`). Every material shipped today is
+    two-sided, which is exactly why nothing had noticed: the first batch wanted `eNone`, which
+    differed from the assumption and so was set. Now set unconditionally per batch: one extra
+    state token per batch costs nothing measurable, and it removes the rule about when the set
+    may be skipped along with the bug that rule caused.
+  - **The stop flag survived a run.** `g_bShouldClose` is a global because a signal handler has
+    to reach it, and nothing reset it, so a second `Engine::Run` in one process ended before
+    its first frame. Invisible to a binary that runs the engine once; fatal to a test that runs
+    it eight times. `Run` now clears it on entry.
+  - Also made non-fatal: a missing skybox cubemap, which threw and killed the run. The error
+    convention asks asset loading to log and skip, nothing renders the skybox yet, and a
+    content root without one is now a scene that looks unfinished rather than a run that cannot
+    start.
 
 > ### 🎯 Checkpoint: stated goal complete
 > CI now builds on 3 platforms, runs unit tests everywhere, and launches real scenes headless
@@ -2808,11 +2979,11 @@ Steps you should **not** attempt out of order:
 | `Barrier.h` | `engine/rhi/include/rhi/Barrier.h` | + `BarrierBatcher` |
 | `PipelineBuilder.*` `ComputePipelineBuilder.*` | `engine/rhi/` | merge the shared parts |
 | `Texture.*` `Cubemap.*` | `engine/rhi/{Image,TextureView}.h` + `assets/TextureData.h` | split GPU vs CPU |
-| `TextureLoader.*` `CubemapLoader.*` `ModelLoader.*` | `engine/assets/src/importers/` | pure `→ *Data` functions |
-| `ResourceManager.*` `ResourceCache.h` | `engine/assets/{AssetRegistry,AssetCache}.h` | keyed by `AssetId` |
+| `TextureLoader.*` `CubemapLoader.*` `ModelLoader.*` | `engine/asset/src/importers/` | pure `→ *Data` functions |
+| `ResourceManager.*` `ResourceCache.h` | `engine/asset/{AssetRegistry,AssetCache}.h` | keyed by `AssetId` |
 | `Model.*` `ModelData.*` `Mesh.*` | `assets/MeshData.h` + `assets/GpuMeshRegistry.h` + `scene/components/MeshRenderer.h` | one class → three concerns |
 | `Material.*` `PBRMaterial.*` `MaterialFactory.*` | `assets/MaterialData.h` + `assets/MaterialRegistry.h` | params → SSBO |
-| `Node.*` | `engine/assets/src/importers/ModelImporter.cpp` | import-time only; not runtime state |
+| `Node.*` | `engine/asset/src/importers/ModelImporter.cpp` | import-time only; not runtime state |
 | `Entity.*` `Component.h` `SceneComponent.*` `LogicComponent.h` | `engine/scene/{World,Entity}.h` + `components/` | ECS |
 | `SceneGraph.h` | `engine/scene/World.h` + `scene/SceneDesc.h` | |
 | `Transform.*` | `scene/components/Transform.h` + `systems/TransformSystem.cpp` | quaternion rotation |

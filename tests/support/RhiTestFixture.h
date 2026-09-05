@@ -1,5 +1,7 @@
 #pragma once
 
+#include "TestEnvironment.h"
+
 #include <array>
 #include <cstdint>
 #include <exception>
@@ -170,7 +172,8 @@ inline DeviceInstance* TryGetDevice(DeviceConfig config)
 
 /**
  * The shared device for `config`, skipping the calling test case when there is
- * none.
+ * none — or failing it where the environment says a device was supposed to be
+ * there.
  *
  * The skip happens here rather than at the call site because SKIP() throws —
  * that is what aborts the case — so the return below is unreachable whenever
@@ -181,7 +184,13 @@ inline Hikari::Rhi::IDevice& RequireDevice(DeviceConfig config = DeviceConfig::D
 {
     DeviceInstance* pInstance = TryGetDevice(config);
     if (pInstance == nullptr)
-        SKIP("No usable Vulkan device: " + Detail::Slots()[config].FailureReason);
+    {
+        const std::string reason = "No usable Vulkan device: " + Detail::Slots()[config].FailureReason;
+        if (TestEnvironment::DeviceRequired())
+            FAIL(reason);
+
+        SKIP(reason);
+    }
 
     return *pInstance->pDevice;
 }

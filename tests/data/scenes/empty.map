@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<!-- Nothing at all: the case that proves a run with no geometry still succeeds. -->
+<scene>
+</scene>

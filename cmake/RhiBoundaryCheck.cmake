@@ -203,19 +203,20 @@ endforeach()
 # ---------------------------------------------------------------------------
 
 set(transitional_allowlist
-    "src/main.cpp|VulkanNative.h|ImGui_ImplVulkan_Init needs instance/device/queue (D9)"
-    "src/main.cpp|PipelineBuilder.h|Graphics pipeline creation is Vulkan-side (D8)"
-    "src/main.cpp|DebugNames.h|Names the swapchain, pools, sets and sync objects App still owns"
-    "src/CloudSystem.cpp|VulkanNative.h|Raw dispatch recording needs the device (D9)"
-    "src/CloudSystem.cpp|ComputePipelineBuilder.h|Compute pipeline creation is Vulkan-side (D8)"
-    "src/CloudSystem.cpp|CommandListUtil.h|The noise bake is a dispatch, not a copy (Stage 8)"
-    "src/CloudSystem.cpp|DebugNames.h|Names the bake's pipeline and descriptor set"
-    "src/MaterialFactory.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted (D7)"
-    "src/MaterialFactory.cpp|VulkanNative.h|Writes descriptor sets directly (D7)"
-    "src/MaterialFactory.cpp|DebugNames.h|Names the material set layout"
-    "src/PBRMaterial.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted (D7)"
-    "src/PBRMaterial.cpp|VulkanNative.h|Writes descriptor sets directly (D7)"
-    "src/PBRMaterial.cpp|DebugNames.h|Names the material descriptor set"
+    "engine/editor/src/VulkanUiBackend.cpp|VulkanNative.h|ImGui's backend takes instance/device/queue and a VkCommandBuffer by value (D9)"
+    "engine/engine/src/Engine.cpp|PipelineBuilder.h|Graphics pipeline creation is Vulkan-side (D8)"
+    "engine/engine/src/Engine.cpp|VulkanNative.h|The frame loop still records raw draws (B5 removes it)"
+    "engine/engine/src/Engine.cpp|DebugNames.h|Names the pools, sets and sync objects the engine still owns"
+    "engine/engine/src/CloudSystem.cpp|VulkanNative.h|Raw dispatch recording needs the device (D9)"
+    "engine/engine/src/CloudSystem.cpp|ComputePipelineBuilder.h|Compute pipeline creation is Vulkan-side (D8)"
+    "engine/engine/src/CloudSystem.cpp|CommandListUtil.h|The noise bake is a dispatch, not a copy (B1)"
+    "engine/engine/src/CloudSystem.cpp|DebugNames.h|Names the bake's pipeline and descriptor set"
+    "engine/engine/src/MaterialFactory.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted (D7)"
+    "engine/engine/src/MaterialFactory.cpp|VulkanNative.h|Writes descriptor sets directly (D7)"
+    "engine/engine/src/MaterialFactory.cpp|DebugNames.h|Names the material set layout"
+    "engine/engine/src/PBRMaterial.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted (D7)"
+    "engine/engine/src/PBRMaterial.cpp|VulkanNative.h|Writes descriptor sets directly (D7)"
+    "engine/engine/src/PBRMaterial.cpp|DebugNames.h|Names the material descriptor set"
     "tests/unit/rhi/SwapchainUtilTests.cpp|SwapchainUtil.h|Surface states a real display cannot be put into on demand"
     "tests/gpu/rhi/DeviceTests.cpp|VulkanNative.h|The escape hatch is what these cases assert on"
     "tests/gpu/rhi/PresentTargetTests.cpp|VulkanNative.h|A frame is recorded neutrally but submitted with the target's semaphores, and the RHI hands out no queue (Stage 8)"
@@ -231,9 +232,9 @@ function(read_lines path out_var)
   set(${out_var} "${content}" PARENT_SCOPE)
 endfunction()
 
-file(GLOB_RECURSE scanned_files "${repo_root}/src/*.h"
-     "${repo_root}/src/*.cpp" "${repo_root}/tests/*.h" "${repo_root}/tests/*.cpp"
-     "${repo_root}/engine/*.h" "${repo_root}/engine/*.cpp")
+file(GLOB_RECURSE scanned_files
+     "${repo_root}/apps/*.h" "${repo_root}/apps/*.cpp" "${repo_root}/tests/*.h"
+     "${repo_root}/tests/*.cpp" "${repo_root}/engine/*.h" "${repo_root}/engine/*.cpp")
 
 set(unlisted "")
 set(matched_entries "")

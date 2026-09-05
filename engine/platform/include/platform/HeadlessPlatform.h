@@ -1,7 +1,11 @@
 #pragma once
 
+#include <span>
+
 #include <core/Extent2D.h>
 #include <platform/IPlatform.h>
+#include <platform/InputScript.h>
+#include <platform/ScriptedInputSource.h>
 
 namespace Hikari::Platform
 {
@@ -26,6 +30,7 @@ class HeadlessPlatform final : public IPlatform
 {
 public:
     explicit HeadlessPlatform(const WindowDesc& desc);
+    ~HeadlessPlatform() override;
 
     HeadlessPlatform(const HeadlessPlatform&) = delete;
     HeadlessPlatform& operator=(const HeadlessPlatform&) = delete;
@@ -33,9 +38,9 @@ public:
     bool IsHeadless() const override { return true; }
 
     /**
-     * Fixed for the life of the run. There is no display to be resized by and
-     * no window system to report a change, so unlike SdlPlatform's this never
-     * returns {0, 0} and never moves.
+     * Never {0, 0}, unlike SdlPlatform's: there is no window to be minimised.
+     * It moves only where a script asks it to, which is the point of a scripted
+     * resize — target recreation is exercised without a window system.
      */
     Core::Extent2D GetFramebufferExtent() const override { return m_Extent; }
 
@@ -45,6 +50,22 @@ public:
      * anyway — the window-mode flags are rejected at parse time, and the two
      * cursor calls are driven by key events that never arrive.
      */
+    /**
+     * The events this frame's script entries call for, and nothing else. Each
+     * call is one frame: there is no window system to ask, so the frame number
+     * is the count of calls made so far.
+     */
+    std::span<const PlatformEvent> PumpEvents() override;
+
+    /** Held keys, tracked from the script's own key.down and key.up entries. */
+    bool IsKeyDown(Key key) const override;
+
+    /**
+     * Replays `script` as the run proceeds. Without one a headless run receives
+     * no events at all, which is what every run before scripted input did.
+     */
+    void SetInputScript(InputScript script) { m_Input.SetScript(std::move(script)); }
+
     void Show() override {}
     void SetWindowMode(WindowMode mode) override;
     void SetRelativeMouseMode(bool bEnabled) override;
@@ -58,6 +79,8 @@ public:
     void* GetNativeWindowHandle() const override { return nullptr; }
 
 private:
+    ScriptedInputSource m_Input;
+
     Core::Extent2D m_Extent{};
 };
 } // namespace Hikari::Platform

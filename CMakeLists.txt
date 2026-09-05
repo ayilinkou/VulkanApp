@@ -1,6 +1,7 @@
 include(cmake/Warnings.cmake)
 include(cmake/HeaderSelfContainment.cmake)
 include(cmake/EngineModule.cmake)
+include(cmake/BuildOptions.cmake)
 
 cmake_minimum_required(VERSION 4.0)
 
@@ -63,29 +64,6 @@ if(CCACHE_PROGRAM)
   message(STATUS "ccache found, enabling compiler cache: ${CCACHE_PROGRAM}")
 endif()
 
-set(SOURCES
-    src/main.cpp
-    src/Model.cpp
-    src/ModelData.cpp
-    src/Camera.cpp
-    src/Material.cpp
-    src/PBRMaterial.cpp
-    src/Texture.cpp
-    src/Cubemap.cpp
-    src/MaterialFactory.cpp
-    src/ResourceManager.cpp
-    src/TextureLoader.cpp
-    src/CubemapLoader.cpp
-    src/ModelLoader.cpp
-    src/ModelManager.cpp
-    src/Entity.cpp
-    src/SceneComponent.cpp
-    src/Transform.cpp
-    src/Node.cpp
-    src/Mesh.cpp
-    src/CloudSystem.cpp
-    src/XmlParser.cpp)
-
 find_package(Vulkan REQUIRED)
 find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 find_package(SDL3 CONFIG REQUIRED)
@@ -117,6 +95,9 @@ engine_header_self_containment_init()
 add_subdirectory(engine/core)
 add_subdirectory(engine/platform)
 add_subdirectory(engine/rhi)
+add_subdirectory(engine/asset)
+add_subdirectory(engine/engine)
+add_subdirectory(engine/editor)
 
 # clang-format's output is not stable across major versions, so the version is
 # pinned rather than left to whatever is on PATH. Without the pin, the six CI
@@ -157,48 +138,6 @@ else()
   )
 endif()
 
-if(ENGINE_BUILD_TESTS)
-  enable_testing()
-  find_package(Catch2 CONFIG REQUIRED)
-  include(cmake/Testing.cmake)
-  add_subdirectory(tests)
-endif()
-
-# The application's own headers. Engine modules attach their own checks from
-# engine_module(), so this covers src/ only.
-file(GLOB_RECURSE APP_HEADERS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.h)
-
-# pch.h is deliberately excluded — it exists specifically to be force-included
-# ahead of everything else and isn't meant to stand alone.
-list(REMOVE_ITEM APP_HEADERS ${CMAKE_SOURCE_DIR}/src/pch.h)
-
-engine_header_self_containment(
-  App
-  HEADERS
-  ${APP_HEADERS}
-  LINK_LIBRARIES
-  Engine::Core
-  Engine::Platform
-  Engine::RHI
-  SDL3::SDL3
-  Vulkan::Vulkan
-  GPUOpen::VulkanMemoryAllocator
-  glm::glm-header-only
-  assimp::assimp
-  imgui::imgui
-  pugixml::pugixml
-  ImGuiFileDialog
-  INCLUDE_DIRECTORIES
-  src
-  ${Stb_INCLUDE_DIR}
-  COMPILE_DEFINITIONS
-  VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
-  GLM_FORCE_DEPTH_ZERO_TO_ONE
-  GLM_ENABLE_EXPERIMENTAL
-  $<$<CONFIG:Debug>:DEBUG>)
-
-add_executable(HikariEngine)
-
 # Where the executable lands, and — via cmake/Shaders.cmake — the shaders it
 # loads. Both are derived from this one variable so that they cannot drift
 # apart: Paths looks for shaders beside the executable, and a mismatch would
@@ -217,85 +156,62 @@ else()
   set(HIKARI_EXE_DIR ${CMAKE_BINARY_DIR})
 endif()
 
-set_target_properties(HikariEngine PROPERTIES RUNTIME_OUTPUT_DIRECTORY
-                                              ${HIKARI_EXE_DIR})
-
-target_precompile_headers(HikariEngine PRIVATE src/pch.h)
-
-target_sources(HikariEngine PRIVATE ${SOURCES})
-
-target_link_libraries(
-  HikariEngine
-  PRIVATE Engine::Core
-          Engine::Platform
-          Engine::RHI
-          SDL3::SDL3
-          Vulkan::Vulkan
-          GPUOpen::VulkanMemoryAllocator
-          glm::glm-header-only
-          assimp::assimp
-          imgui::imgui
-          pugixml::pugixml
-          ImGuiFileDialog
-          SanitizerShims)
-
-target_include_directories(HikariEngine PRIVATE src ${Stb_INCLUDE_DIR})
-
-target_compile_definitions(
-  HikariEngine
-  PRIVATE VULKAN_HPP_NO_STRUCT_CONSTRUCTORS GLM_FORCE_DEPTH_ZERO_TO_ONE
-          GLM_ENABLE_EXPERIMENTAL $<$<CONFIG:Debug>:DEBUG>
-          # Named in the run report, because frame times from a debug build and
-          # a release one are not comparable and nothing else in the file says
-          # which produced them. Derived rather than passed in by the preset:
-          # $<CONFIG> is correct under multi-config generators, where there is
-          # no single CMAKE_BUILD_TYPE, and for a tree configured without a
-          # preset at all.
-          HIKARI_BUILD_CONFIG="$<LOWER_CASE:$<CONFIG>>$<$<BOOL:${ENABLE_SANITIZERS}>:+asan>")
-
-if(MSVC)
-  if(CMAKE_GENERATOR MATCHES "Visual Studio")
-    # MSBuild batches TUs into one cl invocation, so /MP is what parallelises.
-    target_compile_options(HikariEngine PRIVATE /MP)
-  else()
-    # Ninja parallelises itself; /Z7 embeds debug info in each .obj and avoids
-    # serialising all TUs through mspdbsrv writing a shared PDB.
-    set_target_properties(HikariEngine PROPERTIES MSVC_DEBUG_INFORMATION_FORMAT
-                                                  "$<$<CONFIG:Debug>:Embedded>")
-  endif()
-
-  target_compile_options(HikariEngine PRIVATE $<$<CONFIG:Debug>:/Od>
-                                              $<$<CONFIG:Release>:/O2>)
-
-  target_link_options(
-    HikariEngine PRIVATE $<$<CONFIG:Debug>:/DEBUG> # optional but useful for crash
-                                                   # reports
-    $<$<CONFIG:Release>:/DEBUG>)
-else()
-  target_compile_options(
-    HikariEngine
-    PRIVATE $<$<CONFIG:Debug>:
-            -O0
-            -g
-            >
-            $<$<CONFIG:Release>:
-            -O3
-            >)
-
-  # lld links noticeably faster than bfd, which matters most for the ASan/UBSan
-  # build (large instrumented runtime + debug info to link).
-  include(CheckLinkerFlag)
-  check_linker_flag(CXX "-fuse-ld=lld" LLD_LINKER_AVAILABLE)
-  if(LLD_LINKER_AVAILABLE)
-    target_link_options(HikariEngine PRIVATE -fuse-ld=lld)
-  endif()
-endif()
-
-engine_set_warnings(HikariEngine)
-
 include(cmake/Shaders.cmake)
 
+if(ENGINE_BUILD_TESTS)
+  enable_testing()
+  find_package(Catch2 CONFIG REQUIRED)
+  include(cmake/Testing.cmake)
+  add_subdirectory(tests)
+endif()
+
+# The engine module's private headers — the renderer, scene and asset types that
+# moved out of src/ at step 46. engine_module() checks a module's *public*
+# headers, so without this they would leave the check when they left src/.
+file(GLOB_RECURSE ENGINE_PRIVATE_HEADERS CONFIGURE_DEPENDS
+     ${CMAKE_SOURCE_DIR}/engine/engine/src/*.h)
+
+# pch.h is deliberately excluded — it exists specifically to be force-included
+# ahead of everything else and isn't meant to stand alone.
+list(REMOVE_ITEM ENGINE_PRIVATE_HEADERS
+     ${CMAKE_SOURCE_DIR}/engine/engine/src/pch.h)
+
+engine_header_self_containment(
+  EngineInternal
+  HEADERS
+  ${ENGINE_PRIVATE_HEADERS}
+  LINK_LIBRARIES
+  Engine::Core
+  Engine::Platform
+  Engine::RHI
+  Engine::Asset
+  Engine::Engine
+  SDL3::SDL3
+  Vulkan::Vulkan
+  GPUOpen::VulkanMemoryAllocator
+  glm::glm-header-only
+  assimp::assimp
+  imgui::imgui
+  pugixml::pugixml
+  ImGuiFileDialog
+  INCLUDE_DIRECTORIES
+  ${CMAKE_SOURCE_DIR}/engine/engine/src
+  ${Stb_INCLUDE_DIR}
+  COMPILE_DEFINITIONS
+  VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+  GLM_FORCE_DEPTH_ZERO_TO_ONE
+  GLM_ENABLE_EXPERIMENTAL
+  $<$<CONFIG:Debug>:DEBUG>
+  # PRIVATE on the module, so the check needs its own copy: the report names the
+  # configuration it was produced by, and the header that writes it is checked
+  # standalone.
+  HIKARI_BUILD_CONFIG="$<LOWER_CASE:$<CONFIG>>$<$<BOOL:${ENABLE_SANITIZERS}>:+asan>")
+
+
+
+add_subdirectory(apps)
+
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT
-                                                            HikariEngine)
-set_target_properties(HikariEngine PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY
-                                              "${CMAKE_SOURCE_DIR}")
+                                                            HikariEditor)
+set_target_properties(HikariEditor HikariHeadless
+                      PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

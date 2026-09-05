@@ -1,0 +1,15 @@
+# The scene test's own replay, and deliberately not orbit.txt: that one is for
+# driving the engine by hand, so it gets edited, and a test asserting an exact
+# frame count cannot share a file people experiment in. It did, and the test went
+# red the first time someone added a screenshot line.
+#
+# Covers what a --frames run cannot reach: held-key movement, a resize and the
+# target recreation it forces, a capture at a chosen frame, and a quit that ends
+# the run from inside.
+
+frame 1   key.down Escape   # release the cursor to the camera, or the W below is inert
+frame 2   key.down W
+frame 6   key.up W
+frame 8   window.resize 320x240
+frame 12  screenshot
+frame 14  quit

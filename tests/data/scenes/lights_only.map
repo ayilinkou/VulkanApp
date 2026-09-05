@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<!-- Lights and no geometry, so every draw counter is zero and the frame still records. -->
+<scene>
+	<entity name="DirLight">
+		<transform position="0 0 0" rotation="0 0 0" scale="1 1 1" />
+		<light type="1" intensity="5" direction="0.5 -1 0.5" />
+	</entity>
+	<entity name="PointLight">
+		<transform position="0 0 0" rotation="0 0 0" scale="1 1 1" />
+		<light type="0" intensity="1000" position="0 5 0" />
+	</entity>
+</scene>

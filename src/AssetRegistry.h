@@ -11,11 +11,15 @@
 
 #include <platform/Paths.h>
 
+#include <assets/AssetCache.h>
+
 #include <core/Log.h>
 
-#include "ResourceCache.h"
+#include "CubemapLoader.h"
+#include "ModelLoader.h"
+#include "TextureLoader.h"
 
-inline constexpr Hikari::Core::LogCategory LogResourceManager{"Resource Manager"};
+inline constexpr Hikari::Core::LogCategory LogAssetRegistry{"Asset Registry"};
 
 struct CubemapCreateInfo;
 
@@ -23,26 +27,28 @@ class Texture;
 class Cubemap;
 class ModelData;
 
-class ResourceManager
+/**
+ * Loads assets and hands out shared references to them, keyed by resolved path.
+ *
+ * Constructed rather than reached for: everything it needs arrives in the
+ * constructor, and nothing finds it through a global. Two registries can exist
+ * side by side with caches that know nothing of each other, which is what makes
+ * a loader testable and what stops one scene's teardown reaching into another's.
+ */
+class AssetRegistry
 {
-private:
-    ResourceManager(Hikari::Rhi::IUploadContext& uploadContext,
-                    const Hikari::Platform::Paths& paths)
-        : m_UploadContext(uploadContext), m_Paths(paths)
-    {
-    }
-
 public:
-    static void Init(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::IUploadContext& uploadContext,
-                     const Hikari::Platform::Paths& paths);
-    static ResourceManager* Get() { return s_Instance; }
+    AssetRegistry(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::IUploadContext& uploadContext,
+                  const Hikari::Platform::Paths& paths);
+    ~AssetRegistry();
 
-private:
-    inline static ResourceManager* s_Instance = nullptr;
+    AssetRegistry(const AssetRegistry&) = delete;
+    AssetRegistry& operator=(const AssetRegistry&) = delete;
+    AssetRegistry(AssetRegistry&&) = delete;
+    AssetRegistry& operator=(AssetRegistry&&) = delete;
 
-public:
-    static void PurgeCaches();
-    static void Shutdown();
+    /** Drops the entries whose resources have expired, and logs how many went. */
+    void PurgeCaches();
 
     std::shared_ptr<Texture> LoadTexture(const std::string& filepath,
                                          const Hikari::Rhi::Format format);
@@ -57,13 +63,17 @@ private:
      * this same class, so flushing on every call would put each texture back in
      * its own submission and undo the batching entirely — Sponza's 77 became a
      * handful precisely because one model is one scope. And flushing when the
-     * outermost one ends is what makes "a resource ResourceManager returns is on
-     * the GPU" true by construction rather than by remembering.
+     * outermost one ends is what makes "a resource this class returns is on the
+     * GPU" true by construction rather than by remembering.
+     *
+     * The run report's counters.run.uploadSubmissions is what guards this from a
+     * distance: break the nesting and that number climbs with the scene's
+     * texture count instead of staying at a handful.
      */
     class LoadScope
     {
     public:
-        explicit LoadScope(ResourceManager& owner) : m_Owner(owner) { ++m_Owner.m_LoadDepth; }
+        explicit LoadScope(AssetRegistry& owner) : m_Owner(owner) { ++m_Owner.m_LoadDepth; }
 
         /**
          * Flushing here can fail — it waits on the GPU — and a destructor that
@@ -83,7 +93,7 @@ private:
             }
             catch (const std::exception& error)
             {
-                Hikari::Core::LogMsg(Hikari::Core::LogSeverity::Error, LogResourceManager,
+                Hikari::Core::LogMsg(Hikari::Core::LogSeverity::Error, LogAssetRegistry,
                                      "Flushing pending uploads failed: {}", error.what());
             }
         }
@@ -92,7 +102,7 @@ private:
         LoadScope& operator=(const LoadScope&) = delete;
 
     private:
-        ResourceManager& m_Owner;
+        AssetRegistry& m_Owner;
     };
 
     Hikari::Rhi::IUploadContext& m_UploadContext;
@@ -105,7 +115,15 @@ private:
      */
     const Hikari::Platform::Paths& m_Paths;
 
-    ResourceCache<Texture> m_TextureCache;
-    ResourceCache<Cubemap> m_CubemapCache;
-    ResourceCache<ModelData> m_ModelCache;
+    /**
+     * Owned rather than static: a loader has no state a second registry should
+     * share, and its dependencies are this registry's own.
+     */
+    TextureLoader m_TextureLoader;
+    CubemapLoader m_CubemapLoader;
+    ModelLoader m_ModelLoader;
+
+    Hikari::Assets::AssetCache<Texture> m_TextureCache;
+    Hikari::Assets::AssetCache<Cubemap> m_CubemapCache;
+    Hikari::Assets::AssetCache<ModelData> m_ModelCache;
 };

@@ -31,16 +31,42 @@ struct TimingStats
  */
 struct RunReport
 {
-    /** Counts from the last frame drawn, which is what a capture describes. */
-    struct RunCounters
+    /**
+     * Counts from the last frame drawn, which is the frame a capture shows.
+     */
+    struct FrameCounters
     {
-        uint64_t ValidationErrors = 0;
-        uint64_t ValidationWarnings = 0;
         uint32_t DrawCalls = 0;
         uint32_t Batches = 0;
         uint32_t Instances = 0;
         uint32_t Barriers = 0;
         uint32_t BarrierCalls = 0;
+    };
+
+    /**
+     * Counts accumulated over the whole run, which is a different question from
+     * the frame counts and was previously mixed in with them: a validation error
+     * on frame 3 belongs to the run, and the draw calls of frame 3 do not.
+     */
+    struct RunCounters
+    {
+        uint64_t ValidationErrors = 0;
+        uint64_t ValidationWarnings = 0;
+
+        /**
+         * Queue submissions the upload context made. The number the asset
+         * layer's batching is visible in: one scene's worth of textures loaded
+         * inside one load scope is a handful of submissions, and one submission
+         * per texture means the scoping broke.
+         */
+        uint64_t UploadSubmissions = 0;
+    };
+
+    /** The two scopes, kept apart so that a reader knows which is which. */
+    struct Counters
+    {
+        FrameCounters Frame;
+        RunCounters Run;
     };
 
     /**
@@ -79,7 +105,7 @@ struct RunReport
     };
 
     uint64_t Frames = 0;
-    RunCounters Counters;
+    Counters Counters;
     RunTimings Timings;
     RunInfo Run;
 };

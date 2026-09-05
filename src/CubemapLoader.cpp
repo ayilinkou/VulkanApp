@@ -1,7 +1,6 @@
 #include "CubemapLoader.h"
 
 #include "Cubemap.h"
-#include "ResourceManager.h"
 #include "stb_image.h"
 
 #include <core/Log.h>
@@ -16,23 +15,6 @@ constexpr LogCategory LogCubemapLoader("Cubemap Loader");
 CubemapLoader::CubemapLoader(Rhi::IDevice& rhiDevice, Rhi::IUploadContext& uploadContext)
     : m_RhiDevice(rhiDevice), m_UploadContext(uploadContext)
 {
-}
-
-void CubemapLoader::Init(Rhi::IDevice& rhiDevice, Rhi::IUploadContext& uploadContext)
-{
-    if (s_Instance)
-        throw std::runtime_error("CubemapLoader singleton is already initialised!");
-
-    s_Instance = new CubemapLoader(rhiDevice, uploadContext);
-}
-
-void CubemapLoader::Shutdown()
-{
-    if (!s_Instance)
-        throw std::runtime_error("Attempting to shutdown CubemapLoader when instance is null!");
-
-    delete s_Instance;
-    s_Instance = nullptr;
 }
 
 std::shared_ptr<Cubemap> CubemapLoader::Load(const CubemapCreateInfo& createInfo)

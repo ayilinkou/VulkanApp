@@ -17,23 +17,6 @@ TextureLoader::TextureLoader(Rhi::IDevice& rhiDevice, Rhi::IUploadContext& uploa
 {
 }
 
-void TextureLoader::Init(Rhi::IDevice& rhiDevice, Rhi::IUploadContext& uploadContext)
-{
-    if (s_Instance)
-        throw std::runtime_error("TextureLoader singleton is already initialised!");
-
-    s_Instance = new TextureLoader(rhiDevice, uploadContext);
-}
-
-void TextureLoader::Shutdown()
-{
-    if (!s_Instance)
-        throw std::runtime_error("Attempting to shutdown TextureLoader when instance is null!");
-
-    delete s_Instance;
-    s_Instance = nullptr;
-}
-
 std::shared_ptr<Texture> TextureLoader::Load(const std::string& path, const Rhi::Format format)
 {
     LogMsg(LogSeverity::Info, LogTextureLoader, "Loading texture: {}", path.c_str());
@@ -71,7 +54,7 @@ TextureLoader::CreateTextureFromPixels(stbi_uc* pixels, const uint32_t width, co
     // The context copies the pixels into staging before returning, so the
     // caller's stbi buffer can be freed as soon as this call is done. The
     // texture itself only holds them once a flush covering it has returned,
-    // which ResourceManager does before handing the resource back.
+    // which the AssetRegistry does before handing the resource back.
     m_UploadContext.UploadTexture(
         texture->GetHandle(),
         Rhi::TextureUpload{.Data = std::span(reinterpret_cast<const std::byte*>(pixels), size),

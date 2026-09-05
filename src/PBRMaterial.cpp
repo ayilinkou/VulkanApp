@@ -2,7 +2,7 @@
 
 #include "assimp/material.h"
 
-#include "ResourceManager.h"
+#include "AssetRegistry.h"
 
 #include <rhi/vulkan/DebugNames.h>
 #include <rhi/vulkan/VulkanNative.h>
@@ -12,14 +12,16 @@ using namespace Hikari::Rhi::Vulkan;
 
 PBRMaterial::PBRMaterial(Rhi::IDevice& rhiDevice, DescriptorAllocator& descriptorAllocator,
                          vk::raii::DescriptorSetLayout& setLayout, Rhi::SamplerHandle sampler,
-                         aiMaterial* mat, const std::string& texturesParentFolder)
+                         aiMaterial* mat, const std::string& texturesParentFolder,
+                         AssetRegistry& assets)
     : Material(mat)
 {
-    LoadTextures(mat, texturesParentFolder);
+    LoadTextures(mat, texturesParentFolder, assets);
     CreateDescriptorSet(rhiDevice, descriptorAllocator, setLayout, sampler);
 }
 
-void PBRMaterial::LoadTextures(aiMaterial* mat, const std::string& texturesParentFolder)
+void PBRMaterial::LoadTextures(aiMaterial* mat, const std::string& texturesParentFolder,
+                               AssetRegistry& assets)
 {
     aiString texturePath;
 
@@ -37,7 +39,7 @@ void PBRMaterial::LoadTextures(aiMaterial* mat, const std::string& texturesParen
         mat->GetTexture(aiTextureType::aiTextureType_DIFFUSE, 0, &texturePath) == AI_SUCCESS)
     {
         std::string path = texturesParentFolder + texturePath.C_Str();
-        m_Albedo = ResourceManager::Get()->LoadTexture(path, Rhi::Format::RGBA8Srgb);
+        m_Albedo = assets.LoadTexture(path, Rhi::Format::RGBA8Srgb);
         m_MatData.bHasAlbedoTex = (m_Albedo != nullptr);
     }
     else if (mat->Get(AI_MATKEY_BASE_COLOR, baseColor) == AI_SUCCESS)
@@ -52,7 +54,7 @@ void PBRMaterial::LoadTextures(aiMaterial* mat, const std::string& texturesParen
     if (mat->GetTexture(aiTextureType::aiTextureType_NORMALS, 0, &texturePath) == AI_SUCCESS)
     {
         std::string path = texturesParentFolder + texturePath.C_Str();
-        m_Normal = ResourceManager::Get()->LoadTexture(path, Rhi::Format::RGBA8Unorm);
+        m_Normal = assets.LoadTexture(path, Rhi::Format::RGBA8Unorm);
         m_MatData.bHasNormalTex = (m_Normal != nullptr);
     }
 
@@ -60,7 +62,7 @@ void PBRMaterial::LoadTextures(aiMaterial* mat, const std::string& texturesParen
         AI_SUCCESS)
     {
         std::string path = texturesParentFolder + texturePath.C_Str();
-        m_MetallicRoughness = ResourceManager::Get()->LoadTexture(path, Rhi::Format::RGBA8Unorm);
+        m_MetallicRoughness = assets.LoadTexture(path, Rhi::Format::RGBA8Unorm);
         m_MatData.bHasMetallicRoughnessTex = (m_MetallicRoughness != nullptr);
     }
 

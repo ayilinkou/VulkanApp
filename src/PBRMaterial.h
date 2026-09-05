@@ -14,18 +14,21 @@
 
 struct aiMaterial;
 
+class AssetRegistry;
+
 class PBRMaterial : public Material
 {
 public:
     PBRMaterial(Hikari::Rhi::IDevice& rhiDevice,
                 Hikari::Rhi::Vulkan::DescriptorAllocator& descriptorAllocator,
                 vk::raii::DescriptorSetLayout& setLayout, Hikari::Rhi::SamplerHandle sampler,
-                aiMaterial* mat, const std::string& texturesParentFolder);
+                aiMaterial* mat, const std::string& texturesParentFolder, AssetRegistry& assets);
 
     virtual void* GetPushConstantData() override { return &m_MatData; }
 
 private:
-    void LoadTextures(aiMaterial* mat, const std::string& texturesParentFolder);
+    void LoadTextures(aiMaterial* mat, const std::string& texturesParentFolder,
+                      AssetRegistry& assets);
     void CreateDescriptorSet(Hikari::Rhi::IDevice& rhiDevice,
                              Hikari::Rhi::Vulkan::DescriptorAllocator& descriptorAllocator,
                              vk::raii::DescriptorSetLayout& setLayout,

@@ -1,5 +1,7 @@
 #include "ModelLoader.h"
 
+#include "AssetRegistry.h"
+
 #include "assimp/Importer.hpp"
 #include "assimp/postprocess.h"
 #include "assimp/scene.h"
@@ -15,26 +17,10 @@
 
 using namespace Hikari;
 
-ModelLoader::ModelLoader(Rhi::IDevice& rhiDevice, Rhi::IUploadContext& uploadContext)
-    : m_RhiDevice(rhiDevice), m_UploadContext(uploadContext)
+ModelLoader::ModelLoader(Rhi::IDevice& rhiDevice, Rhi::IUploadContext& uploadContext,
+                         AssetRegistry& assets)
+    : m_RhiDevice(rhiDevice), m_UploadContext(uploadContext), m_Assets(assets)
 {
-}
-
-void ModelLoader::Init(Rhi::IDevice& rhiDevice, Rhi::IUploadContext& uploadContext)
-{
-    if (s_Instance)
-        throw std::runtime_error("ModelLoader singleton is already initialised!");
-
-    s_Instance = new ModelLoader(rhiDevice, uploadContext);
-}
-
-void ModelLoader::Shutdown()
-{
-    if (!s_Instance)
-        throw std::runtime_error("Attempting to shutdown ModelLoader when instance is null!");
-
-    delete s_Instance;
-    s_Instance = nullptr;
 }
 
 std::shared_ptr<ModelData> ModelLoader::Load(const std::string& path)
@@ -93,7 +79,8 @@ std::vector<std::unique_ptr<Material>> ModelLoader::LoadMaterials(const aiScene*
     for (size_t i = 0; i < pScene->mNumMaterials; i++)
     {
         aiMaterial* pMat = pScene->mMaterials[i];
-        materials.emplace_back(MaterialFactory::Get()->CreatePBRMaterial(pMat, modelRoot));
+        materials.emplace_back(
+            MaterialFactory::Get()->CreatePBRMaterial(pMat, modelRoot, m_Assets));
     }
     return materials;
 }

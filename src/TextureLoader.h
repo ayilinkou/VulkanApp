@@ -11,17 +11,11 @@
 
 typedef unsigned char stbi_uc;
 
+/** Owned by the AssetRegistry that loads through it; it caches nothing itself. */
 class TextureLoader
 {
-private:
-    friend class ResourceManager;
-
+public:
     TextureLoader(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::IUploadContext& uploadContext);
-
-    static void Init(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::IUploadContext& uploadContext);
-    static void Shutdown();
-
-    static TextureLoader* Get() { return s_Instance; }
 
     [[nodiscard]] std::shared_ptr<Texture> Load(const std::string& filepath,
                                                 const Hikari::Rhi::Format format);
@@ -32,8 +26,6 @@ private:
                             const std::string& name);
 
 private:
-    inline static TextureLoader* s_Instance = nullptr;
-
     Hikari::Rhi::IDevice& m_RhiDevice;
     Hikari::Rhi::IUploadContext& m_UploadContext;
 };

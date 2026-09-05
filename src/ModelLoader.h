@@ -11,28 +11,28 @@
 
 struct aiScene;
 
+class AssetRegistry;
 class ModelData;
 
+/** Owned by the AssetRegistry that loads through it; it caches nothing itself. */
 class ModelLoader
 {
-private:
-    friend class ResourceManager;
-
-    ModelLoader(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::IUploadContext& uploadContext);
-
-    static void Init(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::IUploadContext& uploadContext);
-    static void Shutdown();
-
-    static ModelLoader* Get() { return s_Instance; }
+public:
+    /**
+     * Holds the registry that owns it, because a model's materials load their
+     * own textures — through that same registry, so that they land in one cache
+     * and inside the caller's load scope rather than in a flush of their own.
+     */
+    ModelLoader(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::IUploadContext& uploadContext,
+                AssetRegistry& assets);
 
     [[nodiscard]] std::shared_ptr<ModelData> Load(const std::string& path);
 
-    static std::vector<std::unique_ptr<Material>> LoadMaterials(const aiScene* pScene,
-                                                                const std::string& modelRoot);
-
 private:
-    inline static ModelLoader* s_Instance = nullptr;
+    std::vector<std::unique_ptr<Material>> LoadMaterials(const aiScene* pScene,
+                                                         const std::string& modelRoot);
 
     Hikari::Rhi::IDevice& m_RhiDevice;
     Hikari::Rhi::IUploadContext& m_UploadContext;
+    AssetRegistry& m_Assets;
 };

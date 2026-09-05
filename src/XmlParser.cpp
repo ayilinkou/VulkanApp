@@ -64,7 +64,7 @@ Transform XmlParser::ParseTransform(const pugi::xml_node& node)
 }
 
 std::unique_ptr<Model> XmlParser::ParseModel(const pugi::xml_node& node,
-                                             const std::string& scenePath)
+                                             const std::string& scenePath, AssetRegistry& assets)
 {
     auto pathAtt = node.attribute(XML::Path);
     if (!pathAtt)
@@ -75,7 +75,7 @@ std::unique_ptr<Model> XmlParser::ParseModel(const pugi::xml_node& node,
     }
 
     const char* path = pathAtt.as_string();
-    std::unique_ptr<Model> model = std::make_unique<Model>(path);
+    std::unique_ptr<Model> model = std::make_unique<Model>(path, assets);
 
     if (auto transformNode = node.child(XML::Transform))
     {
@@ -154,7 +154,7 @@ NodeType XmlParser::TagToNodeType(std::string_view tag)
 }
 
 /** Returns a nullptr if failed to load a scene. */
-std::unique_ptr<SceneGraph> XmlParser::LoadScene(const std::string& path)
+std::unique_ptr<SceneGraph> XmlParser::LoadScene(const std::string& path, AssetRegistry& assets)
 {
     LogMsg(LogSeverity::Info, LogXmlParser, "Loading scene: {}", path.c_str());
     Timer timer("LoadScene()");
@@ -210,7 +210,7 @@ std::unique_ptr<SceneGraph> XmlParser::LoadScene(const std::string& path)
                     }
                     case NodeType::Model:
                     {
-                        std::unique_ptr<Model> model = ParseModel(comp, path);
+                        std::unique_ptr<Model> model = ParseModel(comp, path, assets);
                         if (model.get())
                             entity.AddComponent(std::move(model));
                         continue;

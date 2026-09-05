@@ -11,6 +11,8 @@
 
 struct aiMaterial;
 
+class AssetRegistry;
+
 class MaterialFactory
 {
 public:
@@ -19,8 +21,14 @@ public:
 
     static MaterialFactory* Get() { return s_Instance; }
 
+    /**
+     * The registry is passed through rather than held: a material's textures
+     * load through whichever registry asked for the model, and this factory is
+     * still a singleton shared by all of them until it too is injected.
+     */
     [[nodiscard]] PBRMaterial* CreatePBRMaterial(aiMaterial* mat,
-                                                 const std::string& texturesParentFolder);
+                                                 const std::string& texturesParentFolder,
+                                                 AssetRegistry& assets);
 
     vk::DescriptorSetLayout GetDescriptorSetLayout() const { return *m_SetLayout; }
 

@@ -73,7 +73,7 @@ set(SOURCES
     src/Texture.cpp
     src/Cubemap.cpp
     src/MaterialFactory.cpp
-    src/ResourceManager.cpp
+    src/AssetRegistry.cpp
     src/TextureLoader.cpp
     src/CubemapLoader.cpp
     src/ModelLoader.cpp
@@ -117,6 +117,7 @@ engine_header_self_containment_init()
 add_subdirectory(engine/core)
 add_subdirectory(engine/platform)
 add_subdirectory(engine/rhi)
+add_subdirectory(engine/assets)
 add_subdirectory(engine/engine)
 
 # clang-format's output is not stable across major versions, so the version is
@@ -181,6 +182,7 @@ engine_header_self_containment(
   Engine::Core
   Engine::Platform
   Engine::RHI
+  Engine::Assets
   SDL3::SDL3
   Vulkan::Vulkan
   GPUOpen::VulkanMemoryAllocator
@@ -230,6 +232,7 @@ target_link_libraries(
   PRIVATE Engine::Core
           Engine::Platform
           Engine::RHI
+          Engine::Assets
           Engine::Engine
           SDL3::SDL3
           Vulkan::Vulkan

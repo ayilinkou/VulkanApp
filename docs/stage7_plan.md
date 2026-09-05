@@ -74,7 +74,8 @@ deliberately — moving them earlier would be drawing that boundary by accident.
 - **Minimal, and deliberately so: de-singleton in place.** `AssetRegistry` is today's
   `ResourceManager` without `Get()` — still path-keyed, still owning the loaders. The
   `AssetId`/`*Data` redesign is Stage 9's, and doing it here would hide a dependency-injection
-  change inside a data-model change.
+  change inside a data-model change. *Landed with the registry still in `src/` — see the
+  architecture plan's §42 note; `engine/assets` was created holding `AssetCache`.*
 - **`LoadScope`'s batching invariant must survive the move.** Injecting an `IUploadContext&` into
   each loader would undo it silently — every loader would flush its own uploads and the batching
   would be gone with nothing failing.

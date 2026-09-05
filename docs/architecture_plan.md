@@ -2488,6 +2488,23 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
 - **Verify:** Output unchanged. Unit test constructs **two** independent registries and
   confirms their caches are separate (impossible today).
 - **Size:** L · **Needs:** 41
+- **Landed (2026-09-05), with two deviations:**
+  - **`engine/assets` holds `AssetCache` only; `AssetRegistry` stays in `src/`.** The registry
+    caches `Texture`, `Cubemap` and `ModelData`, and its implementation needs those complete —
+    they are `src/` types until Stage 8 splits them into `TextureData`/`MeshData`. Same
+    constraint that kept `Engine` in `src/` at step 41, and it resolves the same way: the
+    registry follows its types into the module rather than dragging them in early.
+  - **The two-registries test is a two-caches test.** `AssetRegistry` is not linkable from
+    `tests/` while it lives in `src/` and needs a device, so the independence the step is about
+    — no process-wide table behind the caches — is asserted against `AssetCache` directly, in
+    `tests/unit/assets/AssetCacheTests.cpp`. The registry-level test arrives with the registry.
+
+  What did land in full: the `Get()` singletons for `ResourceManager`, `TextureLoader`,
+  `CubemapLoader` and `ModelLoader` are gone, the registry owns the three loaders and is
+  constructor-injected through `XmlParser::LoadScene` → `Model` and through `ModelLoader` →
+  `MaterialFactory::CreatePBRMaterial` → `PBRMaterial`, and `counters` split into
+  `counters.frame` and `counters.run` with `uploadSubmissions` in the latter. `ModelManager`'s
+  `Init`/`Shutdown` moved to `Engine`, where they wait for step 44.
 
 ### 43. Inject `MaterialFactory`
 - **Do:** Same treatment; owned by `AssetRegistry`.

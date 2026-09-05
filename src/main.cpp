@@ -1,5 +1,6 @@
 #include <span>
 
+#include "AssetRegistry.h"
 #include "Camera.h"
 #include "CloudSystem.h"
 #include "Common.h"
@@ -12,7 +13,6 @@
 #include "Model.h"
 #include "ModelManager.h"
 #include "PBRMaterial.h"
-#include "ResourceManager.h"
 #include "Texture.h"
 #include "Vertex.h"
 #include "XmlParser.h"
@@ -681,12 +681,13 @@ private:
 
         if (!m_Spec.ScenePath.empty())
         {
-            m_SceneGraph = XmlParser::LoadScene(m_Paths.Content(m_Spec.ScenePath).string());
+            m_SceneGraph =
+                XmlParser::LoadScene(m_Paths.Content(m_Spec.ScenePath).string(), *m_Assets);
             if (!m_SceneGraph)
             {
                 throw std::runtime_error("Failed to load scene: " + m_Spec.ScenePath);
             }
-            ResourceManager::PurgeCaches();
+            m_Assets->PurgeCaches();
         }
         else
         {
@@ -708,7 +709,7 @@ private:
         createInfo.FrontPath = skyboxFace("front.jpg");
         createInfo.BackPath = skyboxFace("back.jpg");
 
-        m_Skybox = ResourceManager::Get()->LoadCubemap(createInfo);
+        m_Skybox = m_Assets->LoadCubemap(createInfo);
 
         m_Camera = std::make_unique<Camera>();
 
@@ -850,7 +851,13 @@ private:
         m_PipelineCache = m_RhiDevice->CreatePipelineCache(Rhi::PipelineCacheDesc{
             .Path = m_Paths.UserData("pipeline_cache.bin"), .DebugName = "Pipeline Cache"});
 
-        ResourceManager::Init(*m_RhiDevice, *m_UploadContext, m_Paths);
+        // After the upload context it loads through, and before anything that
+        // loads: the registry is what every asset in the run comes from.
+        m_Assets = std::make_unique<AssetRegistry>(*m_RhiDevice, *m_UploadContext, m_Paths);
+
+        // Still a singleton, injected at step 44. Its lifetime used to be the
+        // registry's, and has to be somebody's now that the registry is not one.
+        ModelManager::Init();
         MaterialFactory::Init(*m_RhiDevice, m_TextureSampler.Get());
 
         CreatePipelines();
@@ -899,13 +906,15 @@ private:
         RunReport report;
         report.Frames = m_FrameCounter;
 
-        report.Counters = {.ValidationErrors = m_Diagnostics.ErrorCount(),
-                           .ValidationWarnings = m_Diagnostics.WarningCount(),
-                           .DrawCalls = m_OpaqueDrawCallCount + m_TransparentDrawCallCount,
-                           .Batches = m_OpaqueBatchCount + m_TransparentBatchCount,
-                           .Instances = m_OpaqueInstanceCount + m_TransparentInstanceCount,
-                           .Barriers = barrierCounts.Barriers,
-                           .BarrierCalls = barrierCounts.Calls};
+        report.Counters.Frame = {.DrawCalls = m_OpaqueDrawCallCount + m_TransparentDrawCallCount,
+                                 .Batches = m_OpaqueBatchCount + m_TransparentBatchCount,
+                                 .Instances = m_OpaqueInstanceCount + m_TransparentInstanceCount,
+                                 .Barriers = barrierCounts.Barriers,
+                                 .BarrierCalls = barrierCounts.Calls};
+
+        report.Counters.Run = {.ValidationErrors = m_Diagnostics.ErrorCount(),
+                               .ValidationWarnings = m_Diagnostics.WarningCount(),
+                               .UploadSubmissions = m_UploadContext->GetStats().Submits};
 
         report.Timings = {.StartupMs = m_StartupMs,
                           .FirstFrame = {.FrameMs = m_FirstFrameMs, .CpuMs = m_FirstFrameCpuMs},
@@ -992,7 +1001,11 @@ private:
         m_SceneGraph.reset();
         ShutdownImGui();
         MaterialFactory::Shutdown();
-        ResourceManager::Shutdown();
+        ModelManager::Shutdown();
+
+        // Last of the asset side: the caches assert they are empty, which only
+        // holds once everything above has dropped what it borrowed.
+        m_Assets.reset();
 
         m_bShutdown = true;
     }
@@ -1341,12 +1354,13 @@ private:
                     // temporarily store both scenes in memory until the load if
                     // finished though. Can look into this in the future if it
                     // becomes a problem.
-                    std::unique_ptr<SceneGraph> tempSceneGraph = XmlParser::LoadScene(path);
+                    std::unique_ptr<SceneGraph> tempSceneGraph =
+                        XmlParser::LoadScene(path, *m_Assets);
                     if (tempSceneGraph.get())
                     {
                         m_SceneGraph.reset();
                         m_SceneGraph = std::move(tempSceneGraph);
-                        ResourceManager::PurgeCaches();
+                        m_Assets->PurgeCaches();
                     }
                 }
                 ImGuiFileDialog::Instance()->Close();
@@ -2654,6 +2668,13 @@ private:
     std::unique_ptr<Rhi::IPipelineCache> m_PipelineCache;
 
     /**
+     * Every asset the run loads comes from here. Declared after the upload
+     * context so that it is destroyed before it: the loaders hold references to
+     * both it and the device.
+     */
+    std::unique_ptr<AssetRegistry> m_Assets;
+
+    /**
      * Borrowed from m_RhiDevice, which outlives them. References rather than
      * copies so that the ~100 call sites still read as they did, and so that
      * there is exactly one owner. Each of these disappears as the corresponding
@@ -2826,13 +2847,18 @@ void WriteRunReport(const Engine::RunReport& report, const std::string& path)
     file << "{\n"
          << "  \"frames\": " << report.Frames << ",\n"
          << "  \"counters\": {\n"
-         << "    \"validationErrors\": " << report.Counters.ValidationErrors << ",\n"
-         << "    \"validationWarnings\": " << report.Counters.ValidationWarnings << ",\n"
-         << "    \"drawCalls\": " << report.Counters.DrawCalls << ",\n"
-         << "    \"batches\": " << report.Counters.Batches << ",\n"
-         << "    \"instances\": " << report.Counters.Instances << ",\n"
-         << "    \"barriers\": " << report.Counters.Barriers << ",\n"
-         << "    \"barrierCalls\": " << report.Counters.BarrierCalls << "\n"
+         << "    \"frame\": {\n"
+         << "      \"drawCalls\": " << report.Counters.Frame.DrawCalls << ",\n"
+         << "      \"batches\": " << report.Counters.Frame.Batches << ",\n"
+         << "      \"instances\": " << report.Counters.Frame.Instances << ",\n"
+         << "      \"barriers\": " << report.Counters.Frame.Barriers << ",\n"
+         << "      \"barrierCalls\": " << report.Counters.Frame.BarrierCalls << "\n"
+         << "    },\n"
+         << "    \"run\": {\n"
+         << "      \"validationErrors\": " << report.Counters.Run.ValidationErrors << ",\n"
+         << "      \"validationWarnings\": " << report.Counters.Run.ValidationWarnings << ",\n"
+         << "      \"uploadSubmissions\": " << report.Counters.Run.UploadSubmissions << "\n"
+         << "    }\n"
          << "  },\n"
          << "  \"timings\": {\n"
          << std::format("    \"startupMs\": {:.4f},\n", report.Timings.StartupMs)

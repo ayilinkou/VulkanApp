@@ -88,8 +88,9 @@ void MaterialFactory::CreateDescriptorSetLayout()
 }
 
 PBRMaterial* MaterialFactory::CreatePBRMaterial(aiMaterial* mat,
-                                                const std::string& texturesParentFolder)
+                                                const std::string& texturesParentFolder,
+                                                AssetRegistry& assets)
 {
     return new PBRMaterial(m_RhiDevice, m_DescriptorAllocator, m_SetLayout, m_Sampler, mat,
-                           texturesParentFolder);
+                           texturesParentFolder, assets);
 }

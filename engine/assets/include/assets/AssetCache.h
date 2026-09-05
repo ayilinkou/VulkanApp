@@ -7,8 +7,20 @@
 #include <string>
 #include <unordered_map>
 
+namespace Hikari::Assets
+{
+
+/**
+ * A path-keyed cache of shared resources that owns none of them.
+ *
+ * Entries are weak, so a resource lives exactly as long as its users: the cache
+ * hands out a second reference to one that is still alive, and forgets one that
+ * is not. That is what makes two caches independent — there is no process-wide
+ * table behind them, and a resource loaded through one is invisible to the
+ * other unless its key is looked up there too.
+ */
 template <typename T>
-class ResourceCache
+class AssetCache
 {
 public:
     template <typename LoadFn>
@@ -29,7 +41,7 @@ public:
         return sp;
     }
 
-    /** Remove entries to resources which are expired */
+    /** Removes the entries whose resources have expired, and says how many went. */
     uint32_t Purge()
     {
         std::lock_guard lock(m_Mutex);
@@ -58,3 +70,5 @@ private:
     std::unordered_map<std::string, std::weak_ptr<T>> m_Cache;
     mutable std::mutex m_Mutex;
 };
+
+} // namespace Hikari::Assets

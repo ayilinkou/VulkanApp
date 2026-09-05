@@ -236,9 +236,14 @@ tests/scripts/baseline_test.sh   # --scene (default scenes/test_scene.map) --fra
 Output goes to `tests/screenshots/` and `tests/reports/` (both gitignored). Compare against
 the committed `tests/baseline/`. Two signals, and **both are usable**:
 
-- **The report's `counters`** — `validationErrors`, `validationWarnings`, `drawCalls`,
-  `batches`, `instances`, `barriers`, `barrierCalls`. These are expectations: they must match
-  the committed baseline exactly, and validation errors must stay at 0.
+- **The report's `counters`**, split by scope. `counters.frame` — `drawCalls`, `batches`,
+  `instances`, `barriers`, `barrierCalls` — describes the last frame drawn, which is the frame
+  a capture shows. `counters.run` — `validationErrors`, `validationWarnings`,
+  `uploadSubmissions` — accumulates over the whole run. Both are expectations: they must match
+  the committed baseline exactly, and validation errors must stay at 0. `uploadSubmissions` is
+  what guards the asset layer's batching from a distance — one scene's textures loaded inside
+  one load scope is a handful of submissions, and a number that tracks the texture count means
+  the scoping broke.
 - **The report's `timings`** — `startupMs`, `firstFrame`, and `mean`/`p99`/`min`/`max` for
   both `frameMs` (wall clock) and `cpuMs` (the same minus what the frame spent blocked).
   These are measurements, not expectations: they vary with the machine, so read them for

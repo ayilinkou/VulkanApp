@@ -117,6 +117,7 @@ engine_header_self_containment_init()
 add_subdirectory(engine/core)
 add_subdirectory(engine/platform)
 add_subdirectory(engine/rhi)
+add_subdirectory(engine/engine)
 
 # clang-format's output is not stable across major versions, so the version is
 # pinned rather than left to whatever is on PATH. Without the pin, the six CI
@@ -229,6 +230,7 @@ target_link_libraries(
   PRIVATE Engine::Core
           Engine::Platform
           Engine::RHI
+          Engine::Engine
           SDL3::SDL3
           Vulkan::Vulkan
           GPUOpen::VulkanMemoryAllocator

@@ -2453,6 +2453,27 @@ next to `IClock` and `RunSpec` rather than next to `HeadlessPlatform`.
   `--frames-in-flight 1` and `3` and confirm both render correctly — a good latent-bug
   detector, since it's currently a compile-time constant baked into array sizes.
 - **Size:** L · **Needs:** 23, 35
+- **Landed (2026-09-05), with four deviations worth keeping:**
+  - **The `Engine` class stays in `src/main.cpp`**, in `namespace Hikari::Engine`, and moves to
+    `engine/engine` at step 46. It reaches for sixteen `src/` headers, which an engine module
+    cannot include, and step 43 requires `MaterialFactory` to stay in `src/` while `Engine`
+    constructs it — so the class cannot leave before the things it holds do. The module was
+    created now and holds `EngineConfig`, `RunSpec`, `RunReport`, `CapturedFrame`, `RunResult`,
+    `CameraPresetData`/`kCameraPresets`, and the option parsing. Same pattern this step's own
+    §41 note already applies to `WriteRunReport`: name the eventual home, move it when the step
+    that owns the move arrives.
+  - **`ParseRunSpec` is `ParseEngineOption` + `PrintEngineUsage`**, taking one option at a time
+    and filling `EngineConfig` alongside `RunSpec`. An app has flags of its own to interleave,
+    so it walks the options once and offers each to the engine first; and `--frames-in-flight`
+    configures the engine rather than the run, so one entry point fills both.
+  - **`RunSpec` carries `bRecordTimings`** as well as `bCaptureFinalFrame`. The frame-timing
+    samples were collected only when `--report` was passed, and the engine can no longer see
+    that flag — without the field it would either lose the condition or accumulate two floats
+    per frame forever in an unbounded run.
+  - **ImGui's `ImageCount` is `max({2u, GetImageCount(), FramesInFlight})`**, not
+    `max(2u, GetImageCount())`. The ring is reused every `ImageCount` frames, so a two-image
+    swapchain with three frames in flight would be overwritten while an earlier frame still
+    read it. `--screenshot` and `--report` stayed app flags, since the paths are the app's.
 - **Note:** this step used to name `WIDTH` and `HEIGHT` as well. They no longer exist — the
   window-mode work replaced them with `WindowDesc` plus `--resolution`, where zero means "ask
   the display". `RunSpec` should carry the resolution and the window mode rather than

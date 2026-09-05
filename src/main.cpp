@@ -23,6 +23,12 @@
 #include <core/SharedQueueJobSystem.h>
 #include <core/Timer.h>
 
+#include <engine/CameraPresets.h>
+#include <engine/EngineConfig.h>
+#include <engine/ParseEngineOptions.h>
+#include <engine/RunResult.h>
+#include <engine/RunSpec.h>
+
 #include <platform/CommandLine.h>
 #include <platform/FileSystem.h>
 #include <platform/HeadlessPlatform.h>
@@ -83,10 +89,6 @@ inline void EnableAnsiColors()
 // For write(), which is what the signal handler prints its newline with.
 #include <unistd.h>
 #endif
-
-constexpr uint32_t INITIAL_INSTANCE_CAPACITY = 1024u;
-constexpr int NUM_FRAMES_IN_FLIGHT = 2;
-constexpr glm::vec3 SKY_COLOR = {0.4f, 0.8f, 1.f};
 
 constexpr LogCategory LogValidationLayer("Validation Layer");
 constexpr LogCategory LogDiagnostics("Diagnostics");
@@ -194,34 +196,24 @@ void HandleRhiDiagnostic(Rhi::DiagnosticSeverity severity, std::string_view mess
     LogMsg(logSeverity, LogValidationLayer, "{}", message);
 }
 
-struct Options
+/**
+ * What the app parses out of the command line: the engine's two inputs, plus
+ * the flags only a binary with a window and somewhere to write can answer for.
+ */
+struct AppOptions
 {
-    std::string ScenePath;
-    std::string ContentRoot;    // --content; empty = resolve automatically
-    uint64_t Frames = 0;        // 0 = run until closed
-    bool bFixedDt = false;      // use a fixed 1/60s timestep
-    int CameraPreset = -1;      // -1 = free camera; else index into kCameraPresets
-    std::string ScreenshotPath; // capture the final frame to this PNG path
-    bool bScreenshotAutoPath = false;
-    std::string ReportPath; // write a JSON run report to this path
-    bool bReportAutoPath = false;
-    bool bStrictValidation = false; // exit non-zero on any validation error
-    Rhi::ValidationPolicy ValidationPolicy = Rhi::ValidationPolicy::Count;
-    bool bHeadless = false; // --headless: render with no window
+    Engine::RunSpec Spec;
+    Engine::EngineConfig Config;
 
-    /**
-     * --no-ui. Suppresses the editor panel without touching anything else:
-     * ImGui stays initialised and its pass still records, so a run with the
-     * flag differs from one without it only in what is drawn. The baseline
-     * capture uses it because the panel is a fifth of the frame and its hover
-     * state depends on where the mouse was last left.
-     *
-     * Orthogonal to --headless on purpose: a headless run still draws the panel,
-     * which is what keeps ImGui exercised once the headless tests run in CI, and
-     * comparing a windowed capture against a headless one needs the flag passed
-     * explicitly on both sides rather than implied by one of them.
-     */
-    bool bNoUi = false;
+    /** --screenshot: a path, or the flag alone for an automatically named one. */
+    std::string ScreenshotPath;
+    bool bScreenshotAutoPath = false;
+
+    /** --report, the same way. */
+    std::string ReportPath;
+    bool bReportAutoPath = false;
+
+    bool bHeadless = false; // --headless: render with no window
 
     /**
      * --resolution. Zero in either half leaves the choice to the platform,
@@ -234,52 +226,18 @@ struct Options
      * "borderless and exclusive at once" cannot be represented past parsing.
      */
     WindowMode StartWindowMode = WindowMode::Windowed;
-    int JobCount =
-        -1; // -1 = default, 0 = SerialJobSystem, N>0 = SharedQueueJobSystem with N worker threads
-
-    /**
-     * --vk-disable-extension, repeatable. Vulkan-specific by nature, which is
-     * what the flag's prefix says: an optional extension exists in one backend's
-     * vocabulary and nowhere else.
-     */
-    std::vector<std::string> DisabledVulkanExtensions;
-
-    /**
-     * --vk-force-single-queue. Same prefix for the same reason: it is queue
-     * families this collapses, and only Vulkan has them.
-     */
-    bool bForceSingleQueue = false;
 };
 
 /**
- * Hardcoded camera transforms selected via --camera-preset <N>, for
- * deterministic screenshots/reports. Rotation is (pitch, yaw, roll) in
- * degrees, matching Transform::Rotation.
- */
-struct CameraPresetData
-{
-    glm::vec3 Position;
-    glm::vec3 Rotation;
-};
-
-constexpr CameraPresetData kCameraPresets[] = {
-    {{0.f, 2.f, 10.f}, {0.f, 0.f, 0.f}},    // 0: front view, eye height
-    {{10.f, 2.f, 0.f}, {0.f, 90.f, 0.f}},   // 1: side view
-    {{0.f, 20.f, 0.1f}, {-89.f, 0.f, 0.f}}, // 2: top-down view
-};
-constexpr int kNumCameraPresets =
-    static_cast<int>(sizeof(kCameraPresets) / sizeof(kCameraPresets[0]));
-
-/**
- * Whether a screenshot can be written from a present target in `format`.
+ * Whether a frame can be captured from a present target in `format`.
  *
- * stbi_write_png takes 8 bits per channel and nothing else, so a 16-bit float
- * target — which nothing asks for today but the neutral format list can name —
- * would need tone mapping rather than a channel swap. Rejected with a message
- * instead of silently reinterpreting the bytes, which is what a bare
- * BytesPerTexel check would allow.
+ * A capture is 8-bit RGBA and nothing else, so a 16-bit float target — which
+ * nothing asks for today but the neutral format list can name — would need tone
+ * mapping rather than a channel swap. Rejected with a message instead of
+ * silently reinterpreting the bytes, which is what a bare BytesPerTexel check
+ * would allow.
  */
-constexpr bool IsWritablePngFormat(Rhi::Format format)
+constexpr bool IsCapturableFormat(Rhi::Format format)
 {
     return format == Rhi::Format::BGRA8Unorm || format == Rhi::Format::RGBA8Unorm ||
            format == Rhi::Format::RGBA8Srgb;
@@ -291,51 +249,28 @@ void PrintUsage()
                  "\n"
                  "Usage: HikariEngine [options]\n"
                  "\n"
-                 "Options:\n"
-                 "  --scene <path>          Load a scene (.map) on startup\n"
-                 "  --content <dir>         Use <dir> as the content root\n"
-                 "  --frames <N>            Exit automatically after N frames "
-                 "(0 = run until closed)\n"
-                 "  --fixed-dt              Use a fixed 1/60s timestep instead "
-                 "of wall-clock time\n"
-                 "  --camera-preset <N>     Use a hardcoded camera preset (0-" +
-                     std::to_string(kNumCameraPresets - 1) +
-                     ") instead of free camera\n"
-                     "  --screenshot <path>     Write a PNG of the final frame "
-                     "before exiting\n"
-                     "  --report <path>         Write a JSON run report before "
-                     "exiting\n"
-                     "  --strict-validation     Exit non-zero if any Vulkan "
-                     "validation error occurred\n"
-                     "  --validation-policy <p> ignore | count | failfast "
-                     "(default: count; failfast aborts on the first error)\n"
-                     "  --resolution <W>x<H>    Start with a window of this size (default: "
-                     "three quarters of\n"
-                     "                          the display)\n"
-                     "  --borderless            Start covering the display as a borderless "
-                     "window\n"
-                     "  --fullscreen            Start in exclusive fullscreen, selecting a "
-                     "display mode\n"
-                     "  --headless              Run without a window, rendering into an "
-                     "offscreen target.\n"
-                     "                          Requires --frames, and cannot be combined with "
-                     "--borderless or --fullscreen\n"
-                     "  --no-ui                 Suppress the editor panel. ImGui still "
-                     "initialises and its\n"
-                     "                          pass still runs, so only what is drawn "
-                     "changes\n"
-                     "  --jobs <N>              Worker thread count (0 = SerialJobSystem, "
-                     "no threads; default = hardware_concurrency() - 1)\n"
-                     "  --vk-disable-extension <name>\n"
-                     "                          Vulkan only. Behave as though the device did not "
-                     "support this\n"
-                     "                          optional extension, to exercise the fallback path. "
-                     "Repeatable.\n"
-                     "  --vk-force-single-queue Vulkan only. Behave as though the device exposed "
-                     "one queue\n"
-                     "                          family, to exercise the path an integrated GPU "
-                     "takes\n"
-                     "  --help                  Print this message and exit\n";
+                 "Options:\n";
+
+    // Printed by the engine rather than copied here, so that a second binary
+    // cannot come to describe the same flag differently.
+    Engine::PrintEngineUsage();
+
+    std::cout << "  --screenshot <path>     Write a PNG of the final frame "
+                 "before exiting\n"
+                 "  --report <path>         Write a JSON run report before "
+                 "exiting\n"
+                 "  --resolution <W>x<H>    Start with a window of this size (default: "
+                 "three quarters of\n"
+                 "                          the display)\n"
+                 "  --borderless            Start covering the display as a borderless "
+                 "window\n"
+                 "  --fullscreen            Start in exclusive fullscreen, selecting a "
+                 "display mode\n"
+                 "  --headless              Run without a window, rendering into an "
+                 "offscreen target.\n"
+                 "                          Requires --frames, and cannot be combined with "
+                 "--borderless or --fullscreen\n"
+                 "  --help                  Print this message and exit\n";
 }
 
 [[noreturn]] void ExitWithUsage(int code)
@@ -376,12 +311,9 @@ std::string GenerateTimestamp()
     return oss.str();
 }
 
-Options ParseArgs(int argc, char** argv)
+AppOptions ParseArgs(int argc, char** argv)
 {
-    constexpr const char* DEFAULT_SCENE = "scenes/test_scene.map";
-    constexpr uint64_t DEFAULT_FRAMES = 1000u;
-
-    Options options;
+    AppOptions options;
 
     try
     {
@@ -394,27 +326,23 @@ Options ParseArgs(int argc, char** argv)
         {
             const std::string& flag = option.Flag;
 
+            // Offered to the engine first: a flag it claims is one this app must
+            // not also answer for, and the order is what guarantees that.
+            if (Engine::ParseEngineOption(option, options.Spec, options.Config))
+                continue;
+
             if (flag == "--help" || flag == "-h")
                 ExitWithUsage(EXIT_SUCCESS);
-            else if (flag == "--content")
-                options.ContentRoot = option.RequireValue();
-            else if (flag == "--scene")
-                options.ScenePath = option.Value.value_or(DEFAULT_SCENE);
-            else if (flag == "--frames")
-                options.Frames = option.Value ? option.RequireUint64() : DEFAULT_FRAMES;
-            else if (flag == "--fixed-dt")
-            {
-                option.RequireNoValue();
-                options.bFixedDt = true;
-            }
-            else if (flag == "--camera-preset")
-                options.CameraPreset = option.RequireInt();
             else if (flag == "--screenshot")
             {
                 if (option.Value)
                     options.ScreenshotPath = *option.Value;
                 else
                     options.bScreenshotAutoPath = true;
+
+                // The engine is asked for pixels; where they land is this app's
+                // business and none of the engine's.
+                options.Spec.bCaptureFinalFrame = true;
             }
             else if (flag == "--report")
             {
@@ -422,27 +350,10 @@ Options ParseArgs(int argc, char** argv)
                     options.ReportPath = *option.Value;
                 else
                     options.bReportAutoPath = true;
-            }
-            else if (flag == "--strict-validation")
-            {
-                option.RequireNoValue();
-                options.bStrictValidation = true;
-            }
-            else if (flag == "--validation-policy")
-            {
-                const std::string value = option.RequireValue();
-                if (value == "ignore")
-                    options.ValidationPolicy = Rhi::ValidationPolicy::Ignore;
-                else if (value == "count")
-                    options.ValidationPolicy = Rhi::ValidationPolicy::Count;
-                else if (value == "failfast")
-                    options.ValidationPolicy = Rhi::ValidationPolicy::FailFast;
-                else
-                {
-                    LogMsg(LogSeverity::Error, LogMain,
-                           "--validation-policy expects ignore, count or failfast, got: {}", value);
-                    ExitWithUsage(EXIT_FAILURE);
-                }
+
+                // Same split as --screenshot: the engine is asked to measure,
+                // and where the numbers land is this app's business.
+                options.Spec.bRecordTimings = true;
             }
             else if (flag == "--resolution")
                 options.WindowSize = option.RequireExtent2D();
@@ -464,20 +375,6 @@ Options ParseArgs(int argc, char** argv)
             {
                 option.RequireNoValue();
                 options.bHeadless = true;
-            }
-            else if (flag == "--no-ui")
-            {
-                option.RequireNoValue();
-                options.bNoUi = true;
-            }
-            else if (flag == "--jobs")
-                options.JobCount = option.RequireInt();
-            else if (flag == "--vk-disable-extension")
-                options.DisabledVulkanExtensions.push_back(option.RequireValue());
-            else if (flag == "--vk-force-single-queue")
-            {
-                option.RequireNoValue();
-                options.bForceSingleQueue = true;
             }
             else
             {
@@ -514,7 +411,7 @@ Options ParseArgs(int argc, char** argv)
     // defensible at a terminal — a soak, say. Rejected anyway because the
     // failure it prevents is silent and expensive in the place this mode is
     // for, and Frames is a uint64_t if someone really wants to soak.
-    if (options.bHeadless && options.Frames == 0)
+    if (options.bHeadless && options.Spec.Frames == 0)
     {
         LogMsg(LogSeverity::Error, LogMain,
                "--headless requires --frames: with no window there is nothing that can end the "
@@ -525,7 +422,8 @@ Options ParseArgs(int argc, char** argv)
     // Ignore stops errors ever being counted, so --strict-validation would pass
     // a run that had them. Rejected rather than silently preferred either way:
     // in CI that combination reads as "validation is enforced" and is not.
-    if (options.bStrictValidation && options.ValidationPolicy == Rhi::ValidationPolicy::Ignore)
+    if (options.Spec.bStrictValidation &&
+        options.Spec.ValidationPolicy == Rhi::ValidationPolicy::Ignore)
     {
         LogMsg(LogSeverity::Error, LogMain,
                "--strict-validation cannot be combined with --validation-policy ignore: "
@@ -535,6 +433,13 @@ Options ParseArgs(int argc, char** argv)
 
     return options;
 }
+
+// Everything below is the engine itself, which step 46 moves into
+// engine/engine once the src/ types it still reaches for have gone. It is
+// namespaced already because that move is what it is waiting for, and
+// because Hikari::Engine is where its RunSpec and EngineConfig live.
+namespace Hikari::Engine
+{
 
 /**
  * Elapsed milliseconds since `start`.
@@ -549,15 +454,6 @@ inline float MillisecondsSince(std::chrono::steady_clock::time_point start)
     return std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start)
         .count();
 }
-
-/** The four numbers the run report carries for a series of frame timings. */
-struct TimingStats
-{
-    float Mean = 0.f;
-    float P99 = 0.f;
-    float Min = 0.f;
-    float Max = 0.f;
-};
 
 /** Takes the samples by value because it sorts them to find the percentile. */
 inline TimingStats ComputeTimingStats(std::vector<float> samples)
@@ -582,12 +478,13 @@ inline TimingStats ComputeTimingStats(std::vector<float> samples)
                        .Max = samples.back()};
 }
 
-class App
+class Engine
 {
 public:
-    App(IPlatform& platform, const Paths& paths, Options options, IJobSystem& jobSystem,
-        Rhi::Diagnostics& diagnostics, std::chrono::steady_clock::time_point processStart)
-        : m_Platform(platform), m_Paths(paths), m_Options(std::move(options)),
+    Engine(IPlatform& platform, const Paths& paths, RunSpec spec, EngineConfig config,
+           IJobSystem& jobSystem, Rhi::Diagnostics& diagnostics,
+           std::chrono::steady_clock::time_point processStart)
+        : m_Platform(platform), m_Paths(paths), m_Spec(std::move(spec)), m_Config(config),
           m_JobSystem(jobSystem), m_Diagnostics(diagnostics),
           m_RhiDevice(Rhi::CreateDevice(MakeDeviceDesc())),
           m_PhysicalDevice(Rhi::Vulkan::GetPhysicalDevice(*m_RhiDevice)),
@@ -596,8 +493,12 @@ public:
           m_QueueIndex(Rhi::Vulkan::GetGraphicsQueueFamily(*m_RhiDevice)),
           m_ProcessStart(processStart)
     {
+        // Sized here rather than at first use: every per-frame resource below is
+        // built by index into this, and a run with one frame in flight has to
+        // find one slot rather than the two a fixed array would always hold.
+        m_Frames.resize(m_Config.FramesInFlight);
     }
-    ~App()
+    ~Engine()
     {
         if (!m_bShutdown && *m_Device)
         {
@@ -606,7 +507,7 @@ public:
         }
     }
 
-    void Run()
+    RunResult Run()
     {
         Init();
 
@@ -632,7 +533,7 @@ public:
             }
 
             const auto now = frameStart;
-            if (m_Options.bFixedDt)
+            if (m_Spec.bFixedDt)
             {
                 m_DeltaTime = 1.f / 60.f;
                 m_RunTime += m_DeltaTime;
@@ -686,29 +587,27 @@ public:
             m_Camera->Tick();
             HandleMovement();
 
-            if (m_bCursorVisible && !m_Options.bNoUi)
+            if (m_bCursorVisible && !m_Spec.bNoUi)
                 DrawImGuiFrame();
 
             ModelManager::Get()->GenerateBatches();
 
-            const bool bIsLastFrame = g_bShouldClose || (m_Options.Frames != 0 &&
-                                                         (m_FrameCounter + 1) >= m_Options.Frames);
-            const bool captureScreenshot = bIsLastFrame && (!m_Options.ScreenshotPath.empty() ||
-                                                            m_Options.bScreenshotAutoPath);
+            const bool bIsLastFrame =
+                g_bShouldClose || (m_Spec.Frames != 0 && (m_FrameCounter + 1) >= m_Spec.Frames);
+            const bool captureScreenshot = bIsLastFrame && m_Spec.bCaptureFinalFrame;
 
             DrawFrame(captureScreenshot);
 
             ++m_FrameCounter;
             RecordFrameTiming(frameStart);
 
-            if (m_Options.Frames != 0 && m_FrameCounter >= m_Options.Frames)
+            if (m_Spec.Frames != 0 && m_FrameCounter >= m_Spec.Frames)
             {
                 g_bShouldClose = true;
             }
         }
 
-        const bool bWantsScreenshot =
-            !m_Options.ScreenshotPath.empty() || m_Options.bScreenshotAutoPath;
+        const bool bWantsScreenshot = m_Spec.bCaptureFinalFrame;
 
         // The in-frame decision at the top of the loop asks whether this is the
         // last frame, and a signal arriving after that line makes the answer
@@ -737,14 +636,16 @@ public:
             RecordFrameTiming(frameStart);
         }
 
+        RunResult result{.Report = BuildRunReport(), .Capture = {}};
         if (bWantsScreenshot)
-            WriteScreenshot();
+            result.Capture = CaptureFinalFrame();
 
-        if (!m_Options.ReportPath.empty() || m_Options.bReportAutoPath)
-            WriteReport();
-
+        // After both: the report reads the present target's extent and format,
+        // and the capture reads the staging buffer the device still owns.
         m_Device.waitIdle();
         Shutdown();
+
+        return result;
     }
 
 private:
@@ -763,8 +664,8 @@ private:
         // back an OffscreenTarget instead of a SwapchainTarget.
         desc.Requirements.bPresent = !m_Platform.IsHeadless();
         desc.Requirements.NativeWindowHandle = m_Platform.GetNativeWindowHandle();
-        desc.DisabledOptionalExtensions = m_Options.DisabledVulkanExtensions;
-        desc.bForceSingleQueue = m_Options.bForceSingleQueue;
+        desc.DisabledOptionalExtensions = m_Spec.DisabledVulkanExtensions;
+        desc.bForceSingleQueue = m_Spec.bForceSingleQueue;
         return desc;
     }
 
@@ -778,12 +679,12 @@ private:
         InitVulkan();
         InitImGui();
 
-        if (!m_Options.ScenePath.empty())
+        if (!m_Spec.ScenePath.empty())
         {
-            m_SceneGraph = XmlParser::LoadScene(m_Paths.Content(m_Options.ScenePath).string());
+            m_SceneGraph = XmlParser::LoadScene(m_Paths.Content(m_Spec.ScenePath).string());
             if (!m_SceneGraph)
             {
-                throw std::runtime_error("Failed to load scene: " + m_Options.ScenePath);
+                throw std::runtime_error("Failed to load scene: " + m_Spec.ScenePath);
             }
             ResourceManager::PurgeCaches();
         }
@@ -811,16 +712,16 @@ private:
 
         m_Camera = std::make_unique<Camera>();
 
-        if (m_Options.CameraPreset >= 0)
+        if (m_Spec.CameraPreset >= 0)
         {
-            if (m_Options.CameraPreset >= kNumCameraPresets)
+            if (m_Spec.CameraPreset >= kNumCameraPresets)
             {
                 throw std::runtime_error(
-                    "Invalid --camera-preset index: " + std::to_string(m_Options.CameraPreset) +
+                    "Invalid --camera-preset index: " + std::to_string(m_Spec.CameraPreset) +
                     " (valid range: 0-" + std::to_string(kNumCameraPresets - 1) + ")");
             }
 
-            const CameraPresetData& preset = kCameraPresets[m_Options.CameraPreset];
+            const CameraPresetData& preset = kCameraPresets[m_Spec.CameraPreset];
             m_Camera->GetTransform().Position = preset.Position;
             m_Camera->GetTransform().Rotation = preset.Rotation;
         }
@@ -862,9 +763,22 @@ private:
         initInfo.Queue = native.GraphicsQueue;
         initInfo.DescriptorPool = VK_NULL_HANDLE;
         initInfo.DescriptorPoolSize = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE;
-        initInfo.MinImageCount = m_PresentTarget->GetImageCount();
+        // Not the target's image count, for two reasons the backend asserts on
+        // (imgui_impl_vulkan.cpp:1298-1299): MinImageCount must be at least 2,
+        // and ImageCount at least MinImageCount. An offscreen target makes one
+        // image per frame in flight, so a run with one of those has a single
+        // image and would trip both.
+        //
+        // ImageCount sizes ImGui's own vertex/index ring and its unused-texture
+        // delay, nothing shared with the engine's frame count, so giving it more
+        // slots than images costs a little memory and nothing else. Fewer is the
+        // hazard: the ring is reused every ImageCount frames, and a ring shorter
+        // than the frames in flight would be overwritten while an earlier frame
+        // was still reading it.
+        initInfo.MinImageCount = 2u;
         initInfo.MinAllocationSize = 1024 * 1024;
-        initInfo.ImageCount = m_PresentTarget->GetImageCount();
+        initInfo.ImageCount =
+            std::max({2u, m_PresentTarget->GetImageCount(), m_Config.FramesInFlight});
         initInfo.UseDynamicRendering = true;
         initInfo.PipelineCache = Rhi::Vulkan::GetNativePipelineCache(*m_PipelineCache);
         initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
@@ -919,7 +833,7 @@ private:
         const Extent2D framebufferExtent = m_Platform.GetFramebufferExtent();
         m_PresentTarget = m_RhiDevice->CreatePresentTarget(
             Rhi::PresentTargetDesc{.Extent = {framebufferExtent.Width, framebufferExtent.Height},
-                                   .FramesInFlight = NUM_FRAMES_IN_FLIGHT});
+                                   .FramesInFlight = m_Config.FramesInFlight});
 
         CreateDepthResources();
         CreateDescriptorSetLayouts();
@@ -942,7 +856,7 @@ private:
         CreatePipelines();
         CreateCommandBuffers();
         CreateGlobalBuffers();
-        CreateInstanceBuffers(INITIAL_INSTANCE_CAPACITY);
+        CreateInstanceBuffers(m_Config.InitialInstanceCapacity);
         CreateRenderTargets();
         CreateDescriptorPool();
 
@@ -962,7 +876,7 @@ private:
                                               .ComputeQueue = m_GraphicsQueue,
                                               .SwapchainWidth = SwapchainExtent().width,
                                               .SwapchainHeight = SwapchainExtent().height,
-                                              .FramesInFlight = NUM_FRAMES_IN_FLIGHT};
+                                              .FramesInFlight = m_Config.FramesInFlight};
         m_CloudSystem = std::make_unique<CloudSystem>(cloudCreateInfo);
 
         CreateDescriptorSets();
@@ -971,193 +885,99 @@ private:
     }
 
     /**
-     * The stamp that names the auto-pathed files of one capture.
-     *
-     * Taken when the first of those files is written and reused by the rest, so
-     * that a screenshot and the report describing the same moment share a name
-     * — asking the clock separately puts them a second apart whenever the two
-     * writes straddle a second boundary.
+     * What this run measured, as data. Nothing here decides whether it becomes
+     * a file: the app is handed the struct and makes that call.
      */
-    const std::string& CaptureTimestamp()
+    RunReport BuildRunReport() const
     {
-        if (m_CaptureTimestamp.empty())
-            m_CaptureTimestamp = GenerateTimestamp();
-
-        return m_CaptureTimestamp;
-    }
-
-    void WriteReport()
-    {
-        const std::string DEFAULT_PATH = "tests/reports/report_";
-        EnsureParentDirectoryExists(DEFAULT_PATH);
-
         // The last frame's counts, as the draw call and batch numbers below also
-        // are. Worth knowing when comparing two reports: --screenshot captures
-        // on the final frame, and the copy it inserts costs one extra barrier
-        // and one extra call, so a captured run legitimately reads one higher
-        // than an uncaptured one.
+        // are. Worth knowing when comparing two reports: a captured run copies
+        // the final frame, and that copy costs one extra barrier and one extra
+        // call, so it legitimately reads one higher than an uncaptured one.
         const Rhi::BarrierCounts barrierCounts = FrameBarrierCounts();
 
-        const TimingStats frame = ComputeTimingStats(m_FrameMs);
-        const TimingStats cpu = ComputeTimingStats(m_CpuMs);
+        RunReport report;
+        report.Frames = m_FrameCounter;
 
-        std::string path =
-            m_Options.bReportAutoPath ? DEFAULT_PATH + CaptureTimestamp() : m_Options.ReportPath;
-        path = EnsureExtension(path, ".json");
-        std::ofstream file(path);
-        if (!file.is_open())
-        {
-            LogMsg(LogSeverity::Error, LogMain, "Failed to open report file for writing: {}", path);
-            return;
-        }
+        report.Counters = {.ValidationErrors = m_Diagnostics.ErrorCount(),
+                           .ValidationWarnings = m_Diagnostics.WarningCount(),
+                           .DrawCalls = m_OpaqueDrawCallCount + m_TransparentDrawCallCount,
+                           .Batches = m_OpaqueBatchCount + m_TransparentBatchCount,
+                           .Instances = m_OpaqueInstanceCount + m_TransparentInstanceCount,
+                           .Barriers = barrierCounts.Barriers,
+                           .BarrierCalls = barrierCounts.Calls};
 
-        const auto stats = [](const TimingStats& s)
-        {
-            return std::format("{{ \"mean\": {:.4f}, \"p99\": {:.4f}, \"min\": {:.4f}, "
-                               "\"max\": {:.4f} }}",
-                               s.Mean, s.P99, s.Min, s.Max);
-        };
+        report.Timings = {.StartupMs = m_StartupMs,
+                          .FirstFrame = {.FrameMs = m_FirstFrameMs, .CpuMs = m_FirstFrameCpuMs},
+                          .FrameMs = ComputeTimingStats(m_FrameMs),
+                          .CpuMs = ComputeTimingStats(m_CpuMs)};
 
-        // Two objects rather than one flat list, because they are read
-        // differently: everything under "counters" is an expectation that must
-        // match exactly, everything under "timings" is a measurement that varies
-        // with the machine. A reader cannot tell those apart in a flat object,
-        // and a number that looks authoritative and is not is worse than no
-        // number. "run" is what makes two reports comparable at all — the same
-        // scene at a different resolution, present mode or build configuration
-        // is not the same measurement.
-        file << "{\n"
-             << "  \"frames\": " << m_FrameCounter << ",\n"
-             << "  \"counters\": {\n"
-             << "    \"validationErrors\": " << m_Diagnostics.ErrorCount() << ",\n"
-             << "    \"validationWarnings\": " << m_Diagnostics.WarningCount() << ",\n"
-             << "    \"drawCalls\": " << (m_OpaqueDrawCallCount + m_TransparentDrawCallCount)
-             << ",\n"
-             << "    \"batches\": " << (m_OpaqueBatchCount + m_TransparentBatchCount) << ",\n"
-             << "    \"instances\": " << (m_OpaqueInstanceCount + m_TransparentInstanceCount)
-             << ",\n"
-             << "    \"barriers\": " << barrierCounts.Barriers << ",\n"
-             << "    \"barrierCalls\": " << barrierCounts.Calls << "\n"
-             << "  },\n"
-             << "  \"timings\": {\n"
-             << std::format("    \"startupMs\": {:.4f},\n", m_StartupMs)
-             << std::format("    \"firstFrame\": {{ \"frameMs\": {:.4f}, \"cpuMs\": {:.4f} }},\n",
-                            m_FirstFrameMs, m_FirstFrameCpuMs)
-             << "    \"frameMs\": " << stats(frame) << ",\n"
-             << "    \"cpuMs\": " << stats(cpu) << "\n"
-             << "  },\n"
-             << "  \"run\": {\n"
-             << "    \"fixedDt\": " << (m_Options.bFixedDt ? "true" : "false") << ",\n"
-             << "    \"headless\": " << (m_Platform.IsHeadless() ? "true" : "false") << ",\n"
-             << "    \"noUi\": " << (m_Options.bNoUi ? "true" : "false") << ",\n"
-             << "    \"width\": " << SwapchainExtent().width << ",\n"
-             << "    \"height\": " << SwapchainExtent().height << ",\n"
-             << "    \"jobCount\": " << m_JobSystem.WorkerCount() << ",\n"
-             << "    \"presentMode\": " << PresentModeJson() << ",\n"
-             << "    \"buildConfig\": \"" << HIKARI_BUILD_CONFIG << "\"\n"
-             << "  }\n"
-             << "}\n";
-        file.close();
+        report.Run = {.bFixedDt = m_Spec.bFixedDt,
+                      .bHeadless = m_Platform.IsHeadless(),
+                      .bNoUi = m_Spec.bNoUi,
+                      .Width = SwapchainExtent().width,
+                      .Height = SwapchainExtent().height,
+                      .JobCount = static_cast<uint32_t>(m_JobSystem.WorkerCount()),
+                      .PresentMode = m_PresentTarget->GetPresentMode(),
+                      .BuildConfig = HIKARI_BUILD_CONFIG};
 
-        LogMsg(LogSeverity::Info, LogMain, "Wrote report to {}", path);
+        return report;
     }
 
     /**
-     * The present mode as a JSON value: a quoted name, or null when the target
-     * does not present at all, which is what an offscreen run reports.
+     * Reads back the frame staged during the final DrawFrame() call, before it
+     * was presented, as tightly packed 8-bit RGBA.
+     *
+     * The swizzle happens here because this is where the target's format is
+     * known: a present target picks its own — an offscreen one need not agree
+     * with a surface — so a caller that assumed a channel order would be wrong
+     * on the first target that chose differently.
      */
-    std::string PresentModeJson() const
+    CapturedFrame CaptureFinalFrame()
     {
-        const std::optional<Rhi::PresentMode> mode = m_PresentTarget->GetPresentMode();
-        if (!mode)
-            return "null";
-
-        switch (*mode)
-        {
-            case Rhi::PresentMode::Immediate:
-                return "\"immediate\"";
-            case Rhi::PresentMode::Mailbox:
-                return "\"mailbox\"";
-            case Rhi::PresentMode::Fifo:
-                return "\"fifo\"";
-            case Rhi::PresentMode::FifoRelaxed:
-                return "\"fifo-relaxed\"";
-        }
-
-        return "null";
-    }
-
-    /**
-     * Writes the frame captured into m_ScreenshotStagingBuffer (during the
-     * final frame's DrawFrame() call, before it was presented) out to disk as
-     * a PNG. Used for deterministic verification via --screenshot.
-     */
-    void WriteScreenshot()
-    {
-        const std::string DEFAULT_PATH = "tests/screenshots/screenshot_";
-        EnsureParentDirectoryExists(DEFAULT_PATH);
-
         m_Device.waitIdle();
 
         if (!m_bScreenshotBufferReady)
         {
             LogMsg(LogSeverity::Error, LogMain,
-                   "WriteScreenshot() called without a captured frame. No "
-                   "frame was drawn?");
-            return;
+                   "A capture was asked for without a captured frame. No frame was drawn?");
+            return {};
         }
 
-        // Driven by what the target actually chose, not by what a swapchain
-        // usually chooses. A present target picks its own format — an offscreen
-        // one need not agree with a surface — so a hardcoded channel order is
-        // a latent bug even before a headless run exists to trip over it.
         const Rhi::Format format = m_PresentTarget->GetFormat();
-        const uint32_t bytesPerPixel = Rhi::BytesPerTexel(format);
-        if (!IsWritablePngFormat(format))
+        if (!IsCapturableFormat(format))
         {
             LogMsg(LogSeverity::Error, LogMain,
-                   "Cannot write a screenshot: the present target's format is not an 8-bit "
-                   "four-channel one, which is all stbi_write_png can take.");
-            return;
+                   "Cannot capture the final frame: the present target's format is not an 8-bit "
+                   "four-channel one, which is all a capture can describe.");
+            return {};
         }
 
+        const uint32_t bytesPerPixel = Rhi::BytesPerTexel(format);
         const uint32_t width = SwapchainExtent().width;
         const uint32_t height = SwapchainExtent().height;
-        const vk::DeviceSize bufferSize =
-            static_cast<vk::DeviceSize>(width) * height * bytesPerPixel;
 
-        // PNG is RGBA, so a BGRA target needs its first and third channels
+        // A capture is RGBA, so a BGRA target needs its first and third channels
         // swapped and an RGBA one needs nothing. The shader is indifferent
-        // either way: it writes SV_Target component 0 and the hardware maps
-        // that to whatever the format's first component is.
+        // either way: it writes SV_Target component 0 and the hardware maps that
+        // to whatever the format's first component is.
         const bool bSwapRedAndBlue = format == Rhi::Format::BGRA8Unorm;
 
         const auto* src = static_cast<const uint8_t*>(
             m_RhiDevice->GetMappedData(m_ScreenshotStagingBuffer.Get()));
-        std::vector<uint8_t> pixels(static_cast<size_t>(bufferSize));
+
+        CapturedFrame capture;
+        capture.Extent = {width, height};
+        capture.Pixels.resize(static_cast<size_t>(width) * height * bytesPerPixel);
         for (size_t i = 0; i < static_cast<size_t>(width) * height; i++)
         {
-            pixels[i * 4 + 0] = bSwapRedAndBlue ? src[i * 4 + 2] : src[i * 4 + 0];
-            pixels[i * 4 + 1] = src[i * 4 + 1];
-            pixels[i * 4 + 2] = bSwapRedAndBlue ? src[i * 4 + 0] : src[i * 4 + 2];
-            pixels[i * 4 + 3] = src[i * 4 + 3];
+            capture.Pixels[i * 4 + 0] = bSwapRedAndBlue ? src[i * 4 + 2] : src[i * 4 + 0];
+            capture.Pixels[i * 4 + 1] = src[i * 4 + 1];
+            capture.Pixels[i * 4 + 2] = bSwapRedAndBlue ? src[i * 4 + 0] : src[i * 4 + 2];
+            capture.Pixels[i * 4 + 3] = src[i * 4 + 3];
         }
 
-        std::string path = m_Options.bScreenshotAutoPath ? DEFAULT_PATH + CaptureTimestamp()
-                                                         : m_Options.ScreenshotPath;
-        path = EnsureExtension(path, ".png");
-        const int writeResult =
-            stbi_write_png(path.c_str(), static_cast<int>(width), static_cast<int>(height), 4,
-                           pixels.data(), static_cast<int>(width * bytesPerPixel));
-
-        if (writeResult == 0)
-        {
-            LogMsg(LogSeverity::Error, LogMain, "Failed to write screenshot to {}", path);
-        }
-        else
-        {
-            LogMsg(LogSeverity::Info, LogMain, "Wrote screenshot to {}", path);
-        }
+        return capture;
     }
 
     void Shutdown()
@@ -1187,7 +1007,7 @@ private:
 
     void HandleMouse(float x, float y)
     {
-        if (!m_bCursorVisible && m_Options.CameraPreset < 0)
+        if (!m_bCursorVisible && m_Spec.CameraPreset < 0)
             m_Camera->Rotate(x, y);
     }
 
@@ -1238,7 +1058,7 @@ private:
         // initialised. Unreachable in practice today, since m_bCursorVisible
         // starts true and only a key event can clear it, but that is a property
         // of the current defaults rather than something to rely on.
-        if (m_Platform.IsHeadless() || m_bCursorVisible || m_Options.CameraPreset >= 0)
+        if (m_Platform.IsHeadless() || m_bCursorVisible || m_Spec.CameraPreset >= 0)
             return;
 
         glm::vec3 camOffset = {0.f, 0.f, 0.f};
@@ -1296,7 +1116,7 @@ private:
         if (frameMs > 0.f)
             m_DisplayFPS = (m_DisplayFPS * smoothing) + ((1000.f / frameMs) * (1.f - smoothing));
 
-        if (m_Options.ReportPath.empty() && !m_Options.bReportAutoPath)
+        if (!m_Spec.bRecordTimings)
             return;
 
         if (m_FrameCounter == 1)
@@ -1438,7 +1258,7 @@ private:
         if (!bPresented)
             RecreateSwapchainAndRenderImages();
 
-        m_FrameIndex = (m_FrameIndex + 1) % NUM_FRAMES_IN_FLIGHT;
+        m_FrameIndex = (m_FrameIndex + 1) % m_Config.FramesInFlight;
     }
 
     void DrawImGuiFrame()
@@ -1730,7 +1550,7 @@ private:
                        "Generic Command Pool");
 
         createInfo = vk::CommandPoolCreateInfo{.queueFamilyIndex = m_QueueIndex};
-        for (size_t i = 0u; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0u; i < m_Config.FramesInFlight; i++)
         {
             FrameData& frame = m_Frames[i];
 
@@ -1768,7 +1588,7 @@ private:
     {
         LogMsg(LogSeverity::Info, LogRenderer, "CreateCommandBuffers()");
 
-        for (size_t i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             FrameData& frame = m_Frames[i];
             vk::CommandBufferAllocateInfo allocInfo;
@@ -1898,7 +1718,8 @@ private:
             Rhi::BarrierPresets::UndefinedToRenderTarget().On(frame.OpaqueTexture.GetHandle())};
         m_OpaqueBarrierCounts = list->Barrier(openingBarriers);
 
-        vk::ClearValue clearColor = vk::ClearColorValue(SKY_COLOR.r, SKY_COLOR.g, SKY_COLOR.b, 1.f);
+        vk::ClearValue clearColor =
+            vk::ClearColorValue(m_Config.SkyColor.r, m_Config.SkyColor.g, m_Config.SkyColor.b, 1.f);
         vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.f, 0);
         vk::RenderingAttachmentInfo colorAttachmentInfo = {
             .imageView = NativeView(frame.OpaqueTexture.GetView()),
@@ -2142,7 +1963,7 @@ private:
         // The pass itself still records: its barrier and its render pass are what
         // a frame costs whether or not the panel is drawn, so suppressing the
         // panel alone leaves every counter in the run report untouched.
-        if (m_bCursorVisible && !m_Options.bNoUi)
+        if (m_bCursorVisible && !m_Spec.bNoUi)
             ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *cmd);
 
         cmd.endRendering();
@@ -2211,7 +2032,7 @@ private:
         // The semaphores ordering acquire and present belong to the present
         // target: they have to be rebuilt in lockstep with the images they order
         // access to, and only the object owning the images knows when that is.
-        for (size_t i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             m_Frames[i].DrawFence =
                 vk::raii::Fence(m_Device, {.flags = vk::FenceCreateFlagBits::eSignaled});
@@ -2279,10 +2100,10 @@ private:
         // A recreate may hand back a different number of images than the last
         // one — entering or leaving fullscreen is the usual cause, because the
         // driver switches between composited and direct presentation. Nothing
-        // this class owns is sized to that count (every per-frame array is
-        // NUM_FRAMES_IN_FLIGHT long, and the per-image semaphores belong to the
-        // target), but ImGui's Vulkan backend cached it at init, so it is the
-        // one thing that has to be told.
+        // this class owns is sized to that count (every per-frame array is as
+        // long as the frames in flight, and the per-image semaphores belong to
+        // the target), but ImGui's Vulkan backend cached it at init, so it is
+        // the one thing that has to be told.
         const uint32_t imageCount = m_PresentTarget->GetImageCount();
         if (imageCount != previousImageCount)
         {
@@ -2293,11 +2114,14 @@ private:
             // old count. The ring is rebuilt from InitInfo::ImageCount, which
             // stays at the value Init() was given — ImGui exposes no setter for
             // it — so it does not track this. That is safe rather than merely
-            // tolerable: the ring is only reused once every Count frames, and
-            // Count is at least 2, which is NUM_FRAMES_IN_FLIGHT. The draw
-            // fence waited on at the top of a frame therefore always covers the
-            // frame whose slot is about to be overwritten.
-            ImGui_ImplVulkan_SetMinImageCount(imageCount);
+            // tolerable: the ring is reused once every ImageCount frames, and
+            // InitImGui sized it at or above the frames in flight, so the draw
+            // fence waited on at the top of a frame always covers the frame
+            // whose slot is about to be overwritten.
+            //
+            // Clamped for the same reason InitImGui clamps: the backend asserts
+            // a minimum of 2, which a single-image target would break.
+            ImGui_ImplVulkan_SetMinImageCount(std::max(2u, imageCount));
         }
     }
 
@@ -2353,7 +2177,7 @@ private:
             throw std::runtime_error(
                 std::format("Buffer must be 16 byte aligned! Size is {}", size));
 
-        for (size_t i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             m_Frames[i].GlobalBuffer = Rhi::UniqueHandle<Rhi::BufferHandle>(
                 *m_RhiDevice, m_RhiDevice->CreateBuffer(Rhi::BufferDesc{
@@ -2363,7 +2187,7 @@ private:
                                   .DebugName = std::format("Global Buffer Frame {}", i)}));
         }
 
-        m_GlobalBuffer.SkyColor = SKY_COLOR;
+        m_GlobalBuffer.SkyColor = m_Config.SkyColor;
     }
 
     void UpdateGlobalBuffer(uint32_t frameIndex)
@@ -2428,11 +2252,12 @@ private:
     {
         LogMsg(LogSeverity::Info, LogRenderer, "CreateDescriptorPool()");
 
-        std::array framePoolSize = {vk::DescriptorPoolSize{
-            .type = vk::DescriptorType::eUniformBuffer, .descriptorCount = NUM_FRAMES_IN_FLIGHT}};
+        std::array framePoolSize = {
+            vk::DescriptorPoolSize{.type = vk::DescriptorType::eUniformBuffer,
+                                   .descriptorCount = m_Config.FramesInFlight}};
         vk::DescriptorPoolCreateInfo frameCreateInfo{
             .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-            .maxSets = NUM_FRAMES_IN_FLIGHT,
+            .maxSets = m_Config.FramesInFlight,
             .poolSizeCount = static_cast<uint32_t>(framePoolSize.size()),
             .pPoolSizes = framePoolSize.data()};
 
@@ -2442,12 +2267,12 @@ private:
 
         std::array compositePoolSize = {
             vk::DescriptorPoolSize{.type = vk::DescriptorType::eSampledImage,
-                                   .descriptorCount = NUM_FRAMES_IN_FLIGHT * 3},
+                                   .descriptorCount = m_Config.FramesInFlight * 3},
             vk::DescriptorPoolSize{.type = vk::DescriptorType::eCombinedImageSampler,
-                                   .descriptorCount = NUM_FRAMES_IN_FLIGHT * 1}};
+                                   .descriptorCount = m_Config.FramesInFlight * 1}};
         vk::DescriptorPoolCreateInfo compCreateInfo{
             .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-            .maxSets = NUM_FRAMES_IN_FLIGHT,
+            .maxSets = m_Config.FramesInFlight,
             .poolSizeCount = static_cast<uint32_t>(compositePoolSize.size()),
             .pPoolSizes = compositePoolSize.data()};
 
@@ -2456,10 +2281,10 @@ private:
                        "Composite Descriptor Pool");
 
         std::array genericPoolSize = {vk::DescriptorPoolSize{
-            .type = vk::DescriptorType::eSampledImage, .descriptorCount = NUM_FRAMES_IN_FLIGHT}};
+            .type = vk::DescriptorType::eSampledImage, .descriptorCount = m_Config.FramesInFlight}};
         vk::DescriptorPoolCreateInfo genericCreateInfo{
             .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-            .maxSets = NUM_FRAMES_IN_FLIGHT,
+            .maxSets = m_Config.FramesInFlight,
             .poolSizeCount = static_cast<uint32_t>(genericPoolSize.size()),
             .pPoolSizes = genericPoolSize.data()};
 
@@ -2472,7 +2297,7 @@ private:
     {
         LogMsg(LogSeverity::Info, LogRenderer, "CreateDescriptorSets()");
 
-        std::vector<vk::DescriptorSetLayout> globalBufferLayouts(NUM_FRAMES_IN_FLIGHT,
+        std::vector<vk::DescriptorSetLayout> globalBufferLayouts(m_Config.FramesInFlight,
                                                                  *m_GlobalBufferSetLayout);
         vk::DescriptorSetAllocateInfo globalBufferAllocInfo{
             .descriptorPool = *m_FrameDescriptorPool,
@@ -2481,7 +2306,7 @@ private:
         std::vector<vk::raii::DescriptorSet> uniformDescriptorSets =
             m_Device.allocateDescriptorSets(globalBufferAllocInfo);
 
-        std::vector<vk::DescriptorSetLayout> compSetLayouts(NUM_FRAMES_IN_FLIGHT,
+        std::vector<vk::DescriptorSetLayout> compSetLayouts(m_Config.FramesInFlight,
                                                             *m_CompositeSetLayout);
         vk::DescriptorSetAllocateInfo compAllocInfo{
             .descriptorPool = m_CompositeDescriptorPool,
@@ -2490,7 +2315,7 @@ private:
         std::vector<vk::raii::DescriptorSet> compositeDescriptorSets =
             m_Device.allocateDescriptorSets(compAllocInfo);
 
-        for (size_t i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             FrameData& frame = m_Frames[i];
 
@@ -2527,7 +2352,7 @@ private:
             .descriptorSetCount = static_cast<uint32_t>(depthBufferSetLayouts.size()),
             .pSetLayouts = depthBufferSetLayouts.data()};
 
-        for (size_t i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             m_Frames[i].DepthBufferDescriptorSet =
                 std::move(m_Device.allocateDescriptorSets(depthAllocInfo).front());
@@ -2554,7 +2379,7 @@ private:
         LogMsg(LogSeverity::Info, LogRenderer, "CreateDepthResources()");
 
         m_DepthFormat = FindDepthFormat();
-        for (size_t i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             m_Frames[i].DepthTexture = Texture(
                 *m_RhiDevice,
@@ -2609,7 +2434,7 @@ private:
         // TODO: allocating memory 3 times, can probably allocate once and
         // store offsets Can do the same with uniform buffer.
         vk::DeviceSize size = sizeof(InstanceData) * instanceCapacity;
-        for (int i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (uint32_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             m_Frames[i].InstanceBuffer = Rhi::UniqueHandle<Rhi::BufferHandle>(
                 *m_RhiDevice, m_RhiDevice->CreateBuffer(Rhi::BufferDesc{
@@ -2675,7 +2500,7 @@ private:
                 Rhi::TextureViewDimension::Texture2D);
         };
 
-        for (size_t i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             m_Frames[i].OpaqueTexture =
                 makeTarget(m_OpaqueImageFormat, std::format("Frame_{} Opaque Image", i));
@@ -2726,7 +2551,7 @@ private:
     {
         LogMsg(LogSeverity::Info, LogRenderer, "UpdateCompositeDescriptorSet()");
 
-        for (size_t i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             FrameData& frame = m_Frames[i];
             vk::DescriptorImageInfo opaqueImageInfo{
@@ -2777,7 +2602,7 @@ private:
     {
         LogMsg(LogSeverity::Info, LogRenderer, "UpdateDepthDescriptorSets()");
 
-        for (size_t i = 0; i < NUM_FRAMES_IN_FLIGHT; i++)
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             vk::DescriptorImageInfo imageInfo{
                 .imageView = NativeView(m_Frames[i].DepthTexture.GetView()),
@@ -2802,7 +2627,8 @@ private:
      */
     IPlatform& m_Platform;
     const Paths& m_Paths;
-    Options m_Options;
+    RunSpec m_Spec;
+    EngineConfig m_Config;
     IJobSystem& m_JobSystem;
 
     /**
@@ -2867,7 +2693,7 @@ private:
      */
     bool m_bSwapchainOutOfDate = false;
 
-    std::array<FrameData, NUM_FRAMES_IN_FLIGHT> m_Frames;
+    std::vector<FrameData> m_Frames;
 
     /**
      * Instances every frame's buffer has room for. A starting size, not a
@@ -2899,12 +2725,6 @@ private:
     float m_DisplayFrameTime = 0.f;
     float m_DisplayFPS = 0.f;
     bool m_bShutdown = false;
-
-    /**
-     * Empty until the first auto-pathed file of a capture is written. See
-     * CaptureTimestamp().
-     */
-    std::string m_CaptureTimestamp;
 
     /**
      * Barriers recorded for the current frame, split by the thread that records
@@ -2942,6 +2762,128 @@ private:
     bool m_bScreenshotBufferReady = false;
 };
 
+} // namespace Hikari::Engine
+
+/** Where an auto-pathed capture and report land, relative to the working directory. */
+constexpr const char* kDefaultScreenshotPath = "tests/screenshots/screenshot_";
+constexpr const char* kDefaultReportPath = "tests/reports/report_";
+
+/**
+ * The present mode as a JSON value: a quoted name, or null where the target
+ * does not present at all, which is what an offscreen run reports.
+ */
+std::string PresentModeJson(std::optional<Rhi::PresentMode> mode)
+{
+    if (!mode)
+        return "null";
+
+    switch (*mode)
+    {
+        case Rhi::PresentMode::Immediate:
+            return "\"immediate\"";
+        case Rhi::PresentMode::Mailbox:
+            return "\"mailbox\"";
+        case Rhi::PresentMode::Fifo:
+            return "\"fifo\"";
+        case Rhi::PresentMode::FifoRelaxed:
+            return "\"fifo-relaxed\"";
+    }
+
+    return "null";
+}
+
+/**
+ * Serialises a run report to JSON.
+ *
+ * Three objects rather than one flat list, because they are read differently:
+ * everything under "counters" is an expectation that must match exactly,
+ * everything under "timings" is a measurement that varies with the machine. A
+ * reader cannot tell those apart in a flat object, and a number that looks
+ * authoritative and is not is worse than no number. "run" is what makes two
+ * reports comparable at all — the same scene at a different resolution, present
+ * mode or build configuration is not the same measurement.
+ */
+void WriteRunReport(const Engine::RunReport& report, const std::string& path)
+{
+    EnsureParentDirectoryExists(kDefaultReportPath);
+
+    const std::string finalPath = EnsureExtension(path, ".json");
+    std::ofstream file(finalPath);
+    if (!file.is_open())
+    {
+        LogMsg(LogSeverity::Error, LogMain, "Failed to open report file for writing: {}",
+               finalPath);
+        return;
+    }
+
+    const auto stats = [](const Engine::TimingStats& s)
+    {
+        return std::format("{{ \"mean\": {:.4f}, \"p99\": {:.4f}, \"min\": {:.4f}, "
+                           "\"max\": {:.4f} }}",
+                           s.Mean, s.P99, s.Min, s.Max);
+    };
+
+    file << "{\n"
+         << "  \"frames\": " << report.Frames << ",\n"
+         << "  \"counters\": {\n"
+         << "    \"validationErrors\": " << report.Counters.ValidationErrors << ",\n"
+         << "    \"validationWarnings\": " << report.Counters.ValidationWarnings << ",\n"
+         << "    \"drawCalls\": " << report.Counters.DrawCalls << ",\n"
+         << "    \"batches\": " << report.Counters.Batches << ",\n"
+         << "    \"instances\": " << report.Counters.Instances << ",\n"
+         << "    \"barriers\": " << report.Counters.Barriers << ",\n"
+         << "    \"barrierCalls\": " << report.Counters.BarrierCalls << "\n"
+         << "  },\n"
+         << "  \"timings\": {\n"
+         << std::format("    \"startupMs\": {:.4f},\n", report.Timings.StartupMs)
+         << std::format("    \"firstFrame\": {{ \"frameMs\": {:.4f}, \"cpuMs\": {:.4f} }},\n",
+                        report.Timings.FirstFrame.FrameMs, report.Timings.FirstFrame.CpuMs)
+         << "    \"frameMs\": " << stats(report.Timings.FrameMs) << ",\n"
+         << "    \"cpuMs\": " << stats(report.Timings.CpuMs) << "\n"
+         << "  },\n"
+         << "  \"run\": {\n"
+         << "    \"fixedDt\": " << (report.Run.bFixedDt ? "true" : "false") << ",\n"
+         << "    \"headless\": " << (report.Run.bHeadless ? "true" : "false") << ",\n"
+         << "    \"noUi\": " << (report.Run.bNoUi ? "true" : "false") << ",\n"
+         << "    \"width\": " << report.Run.Width << ",\n"
+         << "    \"height\": " << report.Run.Height << ",\n"
+         << "    \"jobCount\": " << report.Run.JobCount << ",\n"
+         << "    \"presentMode\": " << PresentModeJson(report.Run.PresentMode) << ",\n"
+         << "    \"buildConfig\": \"" << report.Run.BuildConfig << "\"\n"
+         << "  }\n"
+         << "}\n";
+    file.close();
+
+    LogMsg(LogSeverity::Info, LogMain, "Wrote report to {}", finalPath);
+}
+
+/** Writes a captured frame out as a PNG. The pixels arrive as 8-bit RGBA. */
+void WriteCapturePng(const Engine::CapturedFrame& capture, const std::string& path)
+{
+    EnsureParentDirectoryExists(kDefaultScreenshotPath);
+
+    if (capture.IsEmpty())
+    {
+        LogMsg(LogSeverity::Error, LogMain, "No frame was captured, so no screenshot was written.");
+        return;
+    }
+
+    const std::string finalPath = EnsureExtension(path, ".png");
+    const int width = static_cast<int>(capture.Extent.Width);
+    const int height = static_cast<int>(capture.Extent.Height);
+    const int writeResult =
+        stbi_write_png(finalPath.c_str(), width, height, 4, capture.Pixels.data(), width * 4);
+
+    if (writeResult == 0)
+    {
+        LogMsg(LogSeverity::Error, LogMain, "Failed to write screenshot to {}", finalPath);
+    }
+    else
+    {
+        LogMsg(LogSeverity::Info, LogMain, "Wrote screenshot to {}", finalPath);
+    }
+}
+
 int main(int argc, char** argv)
 {
     // First statement in the process, so that startupMs in the run report
@@ -2961,18 +2903,19 @@ int main(int argc, char** argv)
 
     Log::g_MinSeverity = LogSeverity::Info;
 
-    Options options = ParseArgs(argc, argv);
+    AppOptions options = ParseArgs(argc, argv);
 
-    // Declared before pApp so that it outlives the device reporting into it, and
-    // so its counters are still readable for the --strict-validation check
-    // below, which runs after everything has been torn down.
+    // Declared before the engine so that it outlives the device reporting into
+    // it, and
+    // so its counters are still readable for the --strict-validation
+    // check below, which runs after everything has been torn down.
     Rhi::Diagnostics diagnostics(
-        Rhi::Diagnostics::Desc{.Policy = options.ValidationPolicy,
+        Rhi::Diagnostics::Desc{.Policy = options.Spec.ValidationPolicy,
                                .MinSeverity = Rhi::DiagnosticSeverity::Info,
                                .OnMessage = &HandleRhiDiagnostic});
 
     // will be destroyed in reverse order of declaration. The platform must
-    // outlive App: destroying it unloads the Vulkan library.
+    // outlive the engine: destroying it unloads the Vulkan library.
     //
     // IPlatform rather than SdlPlatform because which implementation this is
     // depends on --headless. SdlPlatform::ShowErrorMessageBox is static, so the
@@ -2980,7 +2923,7 @@ int main(int argc, char** argv)
     std::unique_ptr<IPlatform> pPlatform = nullptr;
     std::unique_ptr<Paths> pPaths = nullptr;
     std::unique_ptr<IJobSystem> pJobSystem = nullptr;
-    std::unique_ptr<App> pApp = nullptr;
+    std::unique_ptr<Engine::Engine> pEngine = nullptr;
 
     try
     {
@@ -3005,16 +2948,16 @@ int main(int argc, char** argv)
         if (options.StartWindowMode != WindowMode::Windowed)
             pPlatform->SetWindowMode(options.StartWindowMode);
 
-        if (options.JobCount == 0)
+        if (options.Spec.JobCount == 0)
         {
             LogMsg(LogSeverity::Info, LogMain,
                    "JobSystem selected: SerialJobSystem (no worker threads)");
             pJobSystem = std::make_unique<SerialJobSystem>();
         }
-        else if (options.JobCount > 0)
+        else if (options.Spec.JobCount > 0)
         {
-            pJobSystem =
-                std::make_unique<SharedQueueJobSystem>(static_cast<uint32_t>(options.JobCount));
+            pJobSystem = std::make_unique<SharedQueueJobSystem>(
+                static_cast<uint32_t>(options.Spec.JobCount));
             LogMsg(LogSeverity::Info, LogMain,
                    "JobSystem selected: SharedQueueJobSystem ({} worker threads)",
                    pJobSystem->WorkerCount());
@@ -3027,11 +2970,38 @@ int main(int argc, char** argv)
                    pJobSystem->WorkerCount());
         }
 
-        pPaths = std::make_unique<Paths>(options.ContentRoot);
+        pPaths = std::make_unique<Paths>(options.Spec.ContentRoot);
 
-        pApp = std::make_unique<App>(*pPlatform, *pPaths, options, *pJobSystem, diagnostics,
-                                     processStart);
-        pApp->Run();
+        pEngine =
+            std::make_unique<Engine::Engine>(*pPlatform, *pPaths, options.Spec, options.Config,
+                                             *pJobSystem, diagnostics, processStart);
+        const Engine::RunResult result = pEngine->Run();
+
+        // One stamp for both files, taken when the first is written and reused
+        // by the second, so that a screenshot and the report describing the same
+        // moment share a name — asking the clock twice puts them a second apart
+        // whenever the two writes straddle a second boundary.
+        std::string captureStamp;
+        const auto stamp = [&captureStamp]() -> const std::string&
+        {
+            if (captureStamp.empty())
+                captureStamp = GenerateTimestamp();
+
+            return captureStamp;
+        };
+
+        if (options.Spec.bCaptureFinalFrame)
+        {
+            WriteCapturePng(result.Capture, options.bScreenshotAutoPath
+                                                ? kDefaultScreenshotPath + stamp()
+                                                : options.ScreenshotPath);
+        }
+
+        if (!options.ReportPath.empty() || options.bReportAutoPath)
+        {
+            WriteRunReport(result.Report, options.bReportAutoPath ? kDefaultReportPath + stamp()
+                                                                  : options.ReportPath);
+        }
     }
     catch (const SDLException& e)
     {
@@ -3050,7 +3020,7 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    pApp.reset();
+    pEngine.reset();
     pJobSystem.reset();
     pPaths.reset();
     pPlatform.reset();
@@ -3078,7 +3048,7 @@ int main(int argc, char** argv)
             LogMsg(LogSeverity::Warning, LogDiagnostics, "    {}", message);
     }
 
-    if (options.bStrictValidation && validationErrors > 0)
+    if (options.Spec.bStrictValidation && validationErrors > 0)
     {
         LogMsg(LogSeverity::Error, LogDiagnostics,
                "Strict validation failed: {} validation error(s) occurred", validationErrors);

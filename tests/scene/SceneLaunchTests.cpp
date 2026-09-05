@@ -22,6 +22,7 @@
 
 #include <engine/IEngine.h>
 
+#include "TestEnvironment.h"
 #include "TestPaths.h"
 
 using namespace Hikari;
@@ -102,8 +103,7 @@ void RequireDevice()
         DeviceFailureReason().empty() ? "No usable Vulkan device"
                                       : "No usable Vulkan device: " + DeviceFailureReason();
 
-    const char* required = std::getenv("HIKARI_TESTS_REQUIRE_DEVICE");
-    if (required != nullptr && required[0] != '\0' && required[0] != '0')
+    if (TestEnvironment::DeviceRequired())
         FAIL(reason);
 
     SKIP(reason);
@@ -376,4 +376,71 @@ TEST_CASE("A scripted run replays input, resizes and captures where it was told 
     REQUIRE_FALSE(result.Capture.IsEmpty());
     CHECK(result.Capture.Extent.Width == 320u);
     CHECK(result.Capture.Extent.Height == 240u);
+}
+
+TEST_CASE("The headless binary replays a script and needs no frame count", "[scene]")
+{
+    RequireDevice();
+
+    // The other subprocess case covers --frames; this one covers the script as a
+    // command-line surface: the flag, the file being read through it, and the
+    // rule that a script which quits stands in for a frame count. In-process
+    // cases reach none of that — they hand the platform a script object.
+    const std::filesystem::path outputDir =
+        std::filesystem::temp_directory_path() / "hikari_scene_tests";
+    std::filesystem::create_directories(outputDir);
+
+    const std::filesystem::path report = outputDir / "scripted.json";
+    std::filesystem::remove(report);
+
+    const std::string command = std::string("\"") + HIKARI_HEADLESS_BINARY + "\"" +
+                                " --content \"" + TestDataDir() + "\"" +
+                                " --scene scenes/single_cube.map --fixed-dt --no-ui" +
+                                " --strict-validation --input \"" + TestDataDir() +
+                                "input/scripted_replay.txt\"" + " --report \"" + report.string() +
+                                "\"";
+
+    INFO("command: " << command);
+    REQUIRE(std::system(command.c_str()) == 0);
+    REQUIRE(std::filesystem::exists(report));
+
+    std::ifstream reportFile(report);
+    const std::string contents((std::istreambuf_iterator<char>(reportFile)),
+                               std::istreambuf_iterator<char>());
+
+    // The script quits on frame 14 and resizes on frame 8, so the report is
+    // evidence that it drove the run rather than being loaded and ignored.
+    CHECK(contents.find("\"frames\": 15") != std::string::npos);
+    CHECK(contents.find("\"width\": 320") != std::string::npos);
+    CHECK(contents.find("\"height\": 240") != std::string::npos);
+    CHECK(contents.find("\"validationErrors\": 0") != std::string::npos);
+}
+
+TEST_CASE("The headless binary refuses a script it cannot run", "[scene]")
+{
+    // No device needed: both refusals happen while parsing, before anything asks
+    // for one, which is also why they are worth having — a run that cannot end
+    // should fail at the command line rather than after loading a scene.
+    const std::filesystem::path outputDir =
+        std::filesystem::temp_directory_path() / "hikari_scene_tests";
+    std::filesystem::create_directories(outputDir);
+
+    const std::string binary = std::string("\"") + HIKARI_HEADLESS_BINARY + "\"";
+
+    SECTION("a script that is not there")
+    {
+        const std::string command = binary + " --input \"" + (outputDir / "missing.txt").string() +
+                                    "\" > /dev/null 2>&1";
+        CHECK(std::system(command.c_str()) != 0);
+    }
+
+    SECTION("a script that never quits, with no frame count to fall back on")
+    {
+        const std::filesystem::path script = outputDir / "never_ends.txt";
+        std::ofstream(script) << "frame 1 key.down W\n";
+
+        const std::string command =
+            binary + " --input \"" + script.string() + "\" > /dev/null 2>&1";
+        CHECK(std::system(command.c_str()) != 0);
+    }
 }

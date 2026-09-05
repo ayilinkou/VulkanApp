@@ -253,16 +253,30 @@ jobs:
       # tests/support/RhiTestFixture.h enables validation unconditionally — so a
       # release run asserts everything a debug one does, and release is the only
       # structurally different configuration in the matrix (asan inherits debug).
+      # Found rather than hardcoded: the manifest is lvp_icd.json on Ubuntu 24.04
+      # and lvp_icd.x86_64.json elsewhere, and pointing VK_DRIVER_FILES at a file
+      # that is not there costs the loader every driver it would otherwise have
+      # found — vkCreateInstance then fails with ERROR_INCOMPATIBLE_DRIVER. A
+      # missing manifest fails the job here rather than surfacing as an unusable
+      # device in every test below.
+      - name: Locate the lavapipe ICD
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          manifest=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | head -1)
+          if [ -z "$manifest" ]; then
+            echo "No lavapipe ICD manifest under /usr/share/vulkan/icd.d:" >&2
+            ls -l /usr/share/vulkan/icd.d/ >&2 || true
+            exit 1
+          fi
+          echo "Using ICD manifest: $manifest"
+          echo "VK_DRIVER_FILES=$manifest" >> "$GITHUB_ENV"
+
       # Prints what the loader can see before anything asks it for a device, so
       # a failure below is read against an enumeration rather than guessed at.
       - name: Vulkan device probe
         if: matrix.os == 'ubuntu-latest'
         continue-on-error: true
-        env:
-          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: |
-          echo "ICD manifests present:"
-          ls -l /usr/share/vulkan/icd.d/ || true
           sudo apt-get install -y --no-install-recommends vulkan-tools
           vulkaninfo --summary || true
 
@@ -271,11 +285,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         continue-on-error: true
         env:
-          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           # An ICD is supplied on purpose here, so a case that cannot make a
           # device is a failure rather than a skip. Without this the whole suite
           # skips and CTest reports "100% tests passed" — a green run of nothing,
-          # which is what happened the first time these ran.
+          # which is what happened the first time these ran. VK_DRIVER_FILES
+          # comes from the step above.
           HIKARI_TESTS_REQUIRE_DEVICE: "1"
         run: ctest --test-dir build/${{ matrix.preset }} -L gpu --output-on-failure
 
@@ -289,7 +303,6 @@ jobs:
         if: matrix.preset == 'ninja-debug-linux' || matrix.preset == 'ninja-asan-linux'
         continue-on-error: true
         env:
-          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           HIKARI_TESTS_REQUIRE_DEVICE: "1"
         run: ctest --test-dir build/${{ matrix.preset }} -L scene --output-on-failure
 

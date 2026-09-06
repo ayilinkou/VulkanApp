@@ -39,7 +39,15 @@ struct FrameData
     FrameRecorder CompositeCommands;
     FrameRecorder ImGuiCommands;
     FrameRecorder FinalLayoutCommands;
-    vk::raii::Fence DrawFence = nullptr;
+    /**
+     * The frame fence value this slot's last submission signals. Waiting for it
+     * is what makes the slot safe to reuse -- its allocators can be reset and its
+     * per-frame buffers rewritten only once the GPU has passed this point.
+     *
+     * Zero until the slot has been submitted once, which is a value the fence
+     * starts at, so the first pass through waits for nothing.
+     */
+    uint64_t LastSubmitValue = 0u;
     vk::raii::DescriptorSet GlobalBufferDescriptorSet = nullptr;
     vk::raii::DescriptorSet CompositeDescriptorSet = nullptr;
     vk::raii::DescriptorSet DepthBufferDescriptorSet = nullptr;

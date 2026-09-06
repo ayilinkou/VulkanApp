@@ -79,6 +79,22 @@ public:
         return nullptr;
     }
 
+    FenceHandle CreateFence(const FenceDesc&) override
+    {
+        return FenceHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(FenceHandle handle) override { DestroyedFences.push_back(handle); }
+
+    uint32_t GetLiveFenceCount() const override
+    {
+        return static_cast<uint32_t>(DestroyedFences.size());
+    }
+
+    void WaitForFence(FenceHandle, uint64_t) override {}
+
+    void Submit(const SubmitDesc&) override {}
+
     std::unique_ptr<IPipelineCache> CreatePipelineCache(const PipelineCacheDesc&) override
     {
         return nullptr;
@@ -108,6 +124,7 @@ public:
     std::vector<TextureHandle> DestroyedTextures;
     std::vector<TextureViewHandle> DestroyedViews;
     std::vector<SamplerHandle> DestroyedSamplers;
+    std::vector<FenceHandle> DestroyedFences;
 
 private:
     DeviceCaps m_Caps{};

@@ -610,13 +610,16 @@ applies to every step here without anything being switched on first.
   `FenceHandle` + value (D5, D16). `FenceHandle` becomes a type an interface actually takes.
   The per-frame fences move behind the RHI; the present target's semaphores are passed as
   `SemaphoreHandle` and stay behind `IPresentTarget`.
-- **Retires:** `tests/support/GpuReadback.h`'s and `tests/gpu/rhi/PresentTargetTests.cpp`'s
-  `VulkanNative.h` entries — both are submission and fence waiting rather than recording.
-- **Verify:** baseline unchanged; zero validation errors. **Do not treat a clean sync
-  validation run as evidence that submission moved correctly** — §9 establishes that the suite
-  is not currently known to detect a missing cross-submit dependency, which is precisely the
-  hazard class this step introduces. The evidence this step actually needs is the cross-submit
-  hazard test in `backlog.md`, written first and required to fail before the step begins.
+- **Retires:** `tests/support/GpuReadback.h`'s `VulkanNative.h` entry and
+  `tests/gpu/rhi/ValidationCoverageTests.cpp`'s — both were submission and fence waiting, and
+  both are now fully neutral. 19 sites down to 17.
+- **Not** `tests/gpu/rhi/PresentTargetTests.cpp`'s, against this step's first estimate: its
+  remaining uses are a raw render pass for the clears and a `VkImageView` for the attachment,
+  which are step 3's to remove rather than this step's.
+- **Verify:** baseline unchanged; zero validation errors, and those errors now mean something
+  across submissions — see §9. This is the step where a clean synchronization validation run is
+  load-bearing rather than decorative, because it is the step that moves every submit in the
+  engine.
 - **Size:** L
 
 ### 3 — Rendering scope and dynamic state
@@ -844,12 +847,12 @@ Everything that fails the inclusion test in §1, and specifically:
 ## 8. Definition of done
 
 `cmake/RhiBoundaryCheck.cmake` is the measure, because it is already enforced in CI and already
-names the work that removes each entry. Today it holds **7 transitional headers used from 18
-sites** — 18 rather than the first draft's 17, because Stage 7 gave the UI backend an entry of
-its own.
+names the work that removes each entry. Today it holds **7 transitional headers used from 19
+sites** — 17 in the first draft, 18 once Stage 7 gave the UI backend an entry of its own, and 19
+once step 1 added the validation-coverage test, which needs a queue until step 2 hands one out.
 
-The steps account for fifteen of those sites: step 2 two, step 5 six, step 6 one, step 7 one,
-step 10 one, step 11 two, step 12 the two remaining `DebugNames.h` entries. That leaves **2
+The steps account for sixteen of those sites: step 2 two, step 3 one, step 5 six, step 6 one,
+step 7 one, step 10 one, step 11 two, step 12 the two remaining `DebugNames.h` entries. That leaves **2
 headers used from 3 sites**:
 
 | Header | Site | Why it stays |
@@ -870,27 +873,28 @@ per-draw constants and pipelines — and they are, near enough, this document's 
 
 ## 9. Open investigations
 
-Neither is a design question — both are facts to go and establish, and each has a step that
-depends on the answer. The first was run on 6 September 2026 and is recorded here with its
-result, because what it found changes what step 2 is allowed to claim rather than simply
-closing.
+**1. ~~What does the dropped-semaphore experiment actually do today?~~ Settled 6 September
+2026, and the row it came from was wrong twice over.**
 
-**1. ~~What does the dropped-semaphore experiment actually do today?~~ Done 6 September 2026,
-and the answer is the uncomfortable one.** Sync validation is on and demonstrably working — two
-unbarriered copies to one buffer produce `WRITE_AFTER_WRITE hazard detected`, and a wrong
-`oldLayout` fails through `ValidationGuard` — yet dropping the wait semaphore from the offscreen
-read leaves all eighteen gpu tests passing, as does additionally weakening the readback
-barrier's source scope. Forcing syncval externally changes nothing.
+`backlog.md` claimed the gpu suite asserted a synchronization dependency it could not detect,
+because sync validation was off. Sync validation is not off — `validate_sync` is hardcoded
+`VK_TRUE`. The obvious replacement claim, that syncval cannot see cross-submit hazards here, is
+also wrong: a read-after-write on a *buffer* split across two submissions to one queue, with no
+barrier, semaphore or fence between them, is reported as `vkQueueSubmit(): READ_AFTER_WRITE
+hazard detected`, naming both command buffers and both submits.
 
-Two explanations survive with opposite consequences: either there is no hazard, because both
-submits are on the graphics queue and a barrier's first synchronization scope covers commands
-earlier in submission order; or syncval does not track this hazard class here. Settling it needs
-specification text that was not reachable at the time. `backlog.md` carries the full record.
+**So the offscreen read has no hazard to find.** Dropping its wait semaphore leaves the suite
+green because a barrier and submission order were already supplying the dependency the
+semaphore was being credited with. Buffers were the discriminating case: an image carries layout
+transitions, which are themselves ordered against other transitions on the same queue, so an
+image test can pass for a reason unrelated to hazard detection. That is why the earlier attempt
+— weakening the readback barrier's source scope — proved nothing either way.
 
-**What follows for this stage:** step 2's verification may not lean on sync validation being
-clean. The cross-submit hazard test — a deliberately unsynchronised read-after-write that is
-*required* to fail — is what makes that signal mean something, and it is written before step 2
-rather than after it.
+`tests/gpu/rhi/ValidationCoverageTests.cpp` is what came out of it: the hazard above, committed
+deliberately, asserting that validation *reported* it and then clearing the counters. It was
+checked against its own failure — remove the hazard and the case fails — so it is a positive
+control rather than another assertion that cannot fail. Every "zero validation errors" claim in
+the gpu suite now rests on something.
 
 **2. What does Slang's DXIL path require?** Profile and target flags, whether a separate
 validator is needed, and what the emitted DXIL needs at load time. Determines the size of Stage

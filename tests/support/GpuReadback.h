@@ -12,26 +12,23 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "vulkan/vulkan_raii.hpp"
-
 #include <rhi/Barrier.h>
 #include <rhi/BufferDesc.h>
 #include <rhi/Handles.h>
+#include <rhi/ICommandAllocator.h>
 #include <rhi/ICommandList.h>
 #include <rhi/IDevice.h>
 #include <rhi/RhiTypes.h>
+#include <rhi/Submit.h>
 #include <rhi/TextureDesc.h>
 #include <rhi/UniqueHandle.h>
-#include <rhi/vulkan/VulkanNative.h>
 
 /**
  * Getting the bytes back off the GPU, which is the only way a test can say what
  * an upload actually wrote.
  *
- * Vulkan-side because submitting is: the RHI hands out a command list (plan D7,
- * D8) but not a queue, so recording is neutral and the submission around it is
- * not. A second backend's tests would keep these functions' signatures and
- * rewrite their bodies.
+ * Fully neutral: recording, submission and the wait all go through the RHI, so
+ * a second backend runs these unchanged rather than needing its own copy.
  */
 namespace RhiTest
 {
@@ -39,53 +36,42 @@ namespace RhiTest
  * Records `record` into a command list of its own, submits it to the graphics
  * queue, and blocks until the GPU has finished with it.
  *
- * A pool per call rather than one shared across the binary: these run a handful
- * of times per test and the allocation is not what makes them slow, whereas a
- * shared pool would need resetting between uses and would make one test's
- * failure leave the next one recording into a half-used buffer.
+ * An allocator per call rather than one shared across the binary: these run a
+ * handful of times per test and the allocation is not what makes them slow,
+ * whereas a shared one would need resetting between uses and would leave one
+ * test's failure recording the next test into a half-used buffer.
  */
 inline void RunGraphicsCommands(Hikari::Rhi::IDevice& device,
                                 const std::function<void(Hikari::Rhi::ICommandList&)>& record,
                                 std::optional<Hikari::Rhi::SemaphoreHandle> waitSemaphore = {})
 {
-    vk::raii::Device& vkDevice = Hikari::Rhi::Vulkan::GetDevice(device);
+    const std::unique_ptr<Hikari::Rhi::ICommandAllocator> allocator =
+        device.CreateCommandAllocator(Hikari::Rhi::CommandAllocatorDesc{
+            .Queue = Hikari::Rhi::QueueType::Graphics, .DebugName = "Test Readback"});
 
-    const vk::CommandPoolCreateInfo poolInfo{
-        .flags = vk::CommandPoolCreateFlagBits::eTransient,
-        .queueFamilyIndex = Hikari::Rhi::Vulkan::GetGraphicsQueueFamily(device)};
-    vk::raii::CommandPool pool(vkDevice, poolInfo);
+    Hikari::Rhi::ICommandList& list = allocator->Acquire();
+    list.Begin();
+    record(list);
+    list.End();
 
-    const vk::CommandBufferAllocateInfo allocInfo{
-        .commandPool = *pool, .level = vk::CommandBufferLevel::ePrimary, .commandBufferCount = 1u};
-    vk::raii::CommandBuffer cmd = std::move(vk::raii::CommandBuffers(vkDevice, allocInfo).front());
+    const Hikari::Rhi::UniqueHandle<Hikari::Rhi::FenceHandle> fence(
+        device, device.CreateFence(Hikari::Rhi::FenceDesc{.DebugName = "Test Readback"}));
 
-    const std::unique_ptr<Hikari::Rhi::ICommandList> list = Hikari::Rhi::Vulkan::WrapCommandList(device, *cmd);
-    list->Begin();
-    record(*list);
-    list->End();
+    // Waiting on the fence rather than calling WaitIdle: the wait is the
+    // ordering, and a WaitIdle would hide a caller that established none.
+    Hikari::Rhi::ICommandList* pList = &list;
+    constexpr uint64_t kDone = 1u;
+    const Hikari::Rhi::FenceOperation signal{.Fence = fence.Get(), .Value = kDone};
 
-    vk::raii::Fence fence(vkDevice, vk::FenceCreateInfo{});
+    device.Submit(Hikari::Rhi::SubmitDesc{
+        .Queue = Hikari::Rhi::QueueType::Graphics,
+        .CommandLists = {&pList, 1u},
+        .SignalFences = {&signal, 1u},
+        .WaitSemaphores = waitSemaphore ? std::span<const Hikari::Rhi::SemaphoreHandle>(
+                                              &*waitSemaphore, 1u)
+                                        : std::span<const Hikari::Rhi::SemaphoreHandle>{}});
 
-    const vk::CommandBuffer rawCommandBuffer = *cmd;
-
-    // Waiting rather than calling WaitIdle, when the caller has a semaphore to
-    // give: the wait is the ordering, and a WaitIdle would hide a caller that
-    // established none. ColorAttachmentOutput because that is what an offscreen
-    // target's render-complete semaphore is signalled from.
-    const vk::Semaphore waitHandle =
-        waitSemaphore ? Hikari::Rhi::Vulkan::GetSemaphore(device, *waitSemaphore) : nullptr;
-    constexpr vk::PipelineStageFlags waitStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-
-    const vk::SubmitInfo submitInfo{.waitSemaphoreCount = waitSemaphore ? 1u : 0u,
-                                    .pWaitSemaphores = waitSemaphore ? &waitHandle : nullptr,
-                                    .pWaitDstStageMask = waitSemaphore ? &waitStage : nullptr,
-                                    .commandBufferCount = 1u,
-                                    .pCommandBuffers = &rawCommandBuffer};
-    Hikari::Rhi::Vulkan::GetGraphicsQueue(device).submit(submitInfo, *fence);
-
-    const vk::Result result =
-        vkDevice.waitForFences(*fence, vk::True, std::numeric_limits<uint64_t>::max());
-    REQUIRE(result == vk::Result::eSuccess);
+    device.WaitForFence(fence.Get(), kDone);
 }
 
 /**

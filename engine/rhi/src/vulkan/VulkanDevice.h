@@ -26,6 +26,7 @@
 #include "vulkan/QueueFamilies.h"
 #include "vulkan/VulkanAllocator.h"
 #include "vulkan/VulkanBuffer.h"
+#include "vulkan/VulkanFence.h"
 #include "vulkan/VulkanSampler.h"
 #include "vulkan/VulkanSemaphore.h"
 #include "vulkan/VulkanTexture.h"
@@ -64,6 +65,12 @@ public:
 
     [[nodiscard]] std::unique_ptr<ICommandAllocator>
     CreateCommandAllocator(const CommandAllocatorDesc& desc) override;
+
+    FenceHandle CreateFence(const FenceDesc& desc) override;
+    void Destroy(FenceHandle handle) override;
+    uint32_t GetLiveFenceCount() const override { return m_Fences.Size(); }
+    void WaitForFence(FenceHandle handle, uint64_t value) override;
+    void Submit(const SubmitDesc& desc) override;
 
     [[nodiscard]] std::unique_ptr<IPipelineCache>
     CreatePipelineCache(const PipelineCacheDesc& desc) override;
@@ -267,6 +274,7 @@ private:
      * else here.
      */
     Core::HandlePool<VulkanSemaphore, SemaphoreTag> m_Semaphores;
+    Core::HandlePool<VulkanFence, FenceTag> m_Fences;
 
     QueueFamilies m_QueueFamilies;
 

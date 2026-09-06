@@ -68,26 +68,23 @@ constexpr std::array<std::array<float, 4>, 3> kFrameColors{
  * undefined behaviour, and it is exactly the overlap these cases exist to
  * exercise.
  */
+/**
+ * One frame's recording storage. An allocator each rather than one shared,
+ * because these cases deliberately keep several frames in flight at once and an
+ * allocator may not be reset while work recorded from it is still running.
+ */
 struct FrameCommands
 {
-    vk::raii::CommandPool Pool = nullptr;
-    vk::raii::CommandBuffer Buffer = nullptr;
+    std::unique_ptr<ICommandAllocator> Allocator;
+    ICommandList* List = nullptr;
 };
 
 FrameCommands MakeFrameCommands(IDevice& device)
 {
-    vk::raii::Device& vkDevice = Vulkan::GetDevice(device);
-
     FrameCommands frame;
-    frame.Pool = vk::raii::CommandPool(
-        vkDevice,
-        vk::CommandPoolCreateInfo{.flags = vk::CommandPoolCreateFlagBits::eTransient,
-                                  .queueFamilyIndex = Vulkan::GetGraphicsQueueFamily(device)});
-
-    const vk::CommandBufferAllocateInfo allocInfo{.commandPool = *frame.Pool,
-                                                  .level = vk::CommandBufferLevel::ePrimary,
-                                                  .commandBufferCount = 1u};
-    frame.Buffer = std::move(vk::raii::CommandBuffers(vkDevice, allocInfo).front());
+    frame.Allocator = device.CreateCommandAllocator(
+        CommandAllocatorDesc{.Queue = QueueType::Graphics, .DebugName = "Present Test Frame"});
+    frame.List = &frame.Allocator->Acquire();
     return frame;
 }
 
@@ -172,36 +169,17 @@ void RecordClearFrame(IDevice& device, vk::CommandBuffer cmd, const AcquiredImag
 }
 
 /**
- * Submits `cmd` with the waits the acquire asked for and the signal the target
+ * Submits `list` with the waits the acquire asked for and the signal the target
  * requires before Present will accept the image.
- *
- * Vulkan-side because submitting is: the RHI hands out a command list and the
- * semaphores, but not a queue, so this is the one part of a frame that a
- * neutral test cannot express. It goes away with the escape hatch when
- * submission moves behind the RHI in Stage 8.
  */
-void SubmitFrame(IDevice& device, vk::CommandBuffer cmd, std::span<const SemaphoreHandle> waitOn,
+void SubmitFrame(IDevice& device, ICommandList& list, std::span<const SemaphoreHandle> waitOn,
                  SemaphoreHandle signalOnComplete)
 {
-    std::vector<vk::Semaphore> waitSemaphores;
-    std::vector<vk::PipelineStageFlags> waitStages;
-    for (const SemaphoreHandle handle : waitOn)
-    {
-        waitSemaphores.push_back(Vulkan::GetSemaphore(device, handle));
-        waitStages.push_back(vk::PipelineStageFlagBits::eColorAttachmentOutput);
-    }
-
-    const vk::Semaphore signalSemaphore = Vulkan::GetSemaphore(device, signalOnComplete);
-    const vk::SubmitInfo submitInfo{.waitSemaphoreCount =
-                                        static_cast<uint32_t>(waitSemaphores.size()),
-                                    .pWaitSemaphores = waitSemaphores.data(),
-                                    .pWaitDstStageMask = waitStages.data(),
-                                    .commandBufferCount = 1u,
-                                    .pCommandBuffers = &cmd,
-                                    .signalSemaphoreCount = 1u,
-                                    .pSignalSemaphores = &signalSemaphore};
-
-    Vulkan::GetGraphicsQueue(device).submit(submitInfo, nullptr);
+    ICommandList* pList = &list;
+    device.Submit(SubmitDesc{.Queue = QueueType::Graphics,
+                             .CommandLists = {&pList, 1u},
+                             .WaitSemaphores = waitOn,
+                             .SignalSemaphores = {&signalOnComplete, 1u}});
 }
 
 /**
@@ -328,8 +306,8 @@ TEST_CASE("Three overlapping frames render into an offscreen target", "[rhi][gpu
 
         imagesByIndex[acquired.Index] = acquired.Texture;
 
-        RecordClearFrame(device, *frames[frame].Buffer, acquired, kFrameColors[frame], kExtent);
-        SubmitFrame(device, *frames[frame].Buffer, acquired.WaitSemaphores,
+        RecordClearFrame(device, Vulkan::GetNative(*frames[frame].List), acquired, kFrameColors[frame], kExtent);
+        SubmitFrame(device, *frames[frame].List, acquired.WaitSemaphores,
                     target->GetRenderCompleteSemaphore(acquired.Index));
 
         CHECK(target->Present(acquired.Index));
@@ -388,8 +366,8 @@ TEST_CASE("Recreating an offscreen target resizes it", "[rhi][gpu][present]")
     {
         const FrameCommands frame = MakeFrameCommands(device);
         const AcquiredImage acquired = target->Acquire();
-        RecordClearFrame(device, *frame.Buffer, acquired, kFrameColors[0], kExtent);
-        SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+        RecordClearFrame(device, Vulkan::GetNative(*frame.List), acquired, kFrameColors[0], kExtent);
+        SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                     target->GetRenderCompleteSemaphore(acquired.Index));
         CHECK(target->Present(acquired.Index));
         device.WaitIdle();
@@ -406,8 +384,8 @@ TEST_CASE("Recreating an offscreen target resizes it", "[rhi][gpu][present]")
     CHECK(acquired.WaitSemaphores.empty());
 
     const FrameCommands frame = MakeFrameCommands(device);
-    RecordClearFrame(device, *frame.Buffer, acquired, kFrameColors[1], kSmaller);
-    SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+    RecordClearFrame(device, Vulkan::GetNative(*frame.List), acquired, kFrameColors[1], kSmaller);
+    SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                 target->GetRenderCompleteSemaphore(acquired.Index));
     CHECK(target->Present(acquired.Index));
 
@@ -494,8 +472,8 @@ TEST_CASE("Readback returns the exact pixels of a solid clear", "[rhi][gpu][pres
 
     const FrameCommands frame = MakeFrameCommands(device);
     const AcquiredImage acquired = target->Acquire();
-    RecordClearFrame(device, *frame.Buffer, acquired, kColor, kExtent);
-    SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+    RecordClearFrame(device, Vulkan::GetNative(*frame.List), acquired, kColor, kExtent);
+    SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                 target->GetRenderCompleteSemaphore(acquired.Index));
     REQUIRE(target->Present(acquired.Index));
 
@@ -555,8 +533,8 @@ TEST_CASE("Readback packs a non-square, non-power-of-two extent tightly", "[rhi]
 
     const FrameCommands frame = MakeFrameCommands(device);
     const AcquiredImage acquired = target->Acquire();
-    RecordClears(device, *frame.Buffer, acquired, clears);
-    SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+    RecordClears(device, Vulkan::GetNative(*frame.List), acquired, clears);
+    SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                 target->GetRenderCompleteSemaphore(acquired.Index));
     REQUIRE(target->Present(acquired.Index));
 
@@ -614,8 +592,8 @@ TEST_CASE("Readback leaves nothing behind on the device", "[rhi][gpu][present]")
     {
         const FrameCommands frame = MakeFrameCommands(device);
         const AcquiredImage acquired = target->Acquire();
-        RecordClearFrame(device, *frame.Buffer, acquired, kFrameColors[0], kExtent);
-        SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+        RecordClearFrame(device, Vulkan::GetNative(*frame.List), acquired, kFrameColors[0], kExtent);
+        SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                     target->GetRenderCompleteSemaphore(acquired.Index));
         REQUIRE(target->Present(acquired.Index));
 

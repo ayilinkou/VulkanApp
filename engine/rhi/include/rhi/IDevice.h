@@ -11,6 +11,7 @@
 #include <rhi/IPresentTarget.h>
 #include <rhi/PipelineCache.h>
 #include <rhi/SamplerDesc.h>
+#include <rhi/Submit.h>
 #include <rhi/TextureDesc.h>
 #include <rhi/TextureViewDesc.h>
 #include <rhi/UploadContext.h>
@@ -151,6 +152,32 @@ public:
      */
     [[nodiscard]] virtual std::unique_ptr<ICommandAllocator>
     CreateCommandAllocator(const CommandAllocatorDesc& desc) = 0;
+
+    /**
+     * --- Submission and synchronization ---
+     *
+     * A fence is a monotonic counter (plan D5), so waiting is always "has it
+     * reached this value yet" and never needs a reset. That is what lets a frame
+     * slot record the value its last submission signals and wait for exactly
+     * that before reusing itself.
+     */
+    virtual FenceHandle CreateFence(const FenceDesc& desc) = 0;
+    virtual void Destroy(FenceHandle handle) = 0;
+
+    /** Counterpart to GetLiveBufferCount, asserted on at the same place. */
+    virtual uint32_t GetLiveFenceCount() const = 0;
+
+    /**
+     * Blocks until `handle` reaches `value`. Returns immediately when it already
+     * has, including for a value it passed long ago.
+     */
+    virtual void WaitForFence(FenceHandle handle, uint64_t value) = 0;
+
+    /**
+     * Hands recorded lists to a queue. Returns once they are submitted, not once
+     * they have run -- a signalled fence is how a caller learns the latter.
+     */
+    virtual void Submit(const SubmitDesc& desc) = 0;
 
     /**
      * --- Pipelines ---

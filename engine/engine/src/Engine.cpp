@@ -840,10 +840,8 @@ private:
         // FIFO surface the wait is most of the wall clock, and a CPU cost that
         // included it would read as a regression whenever the display paced us.
         const auto fenceWaitStart = std::chrono::steady_clock::now();
-        auto fenceResult = m_Device.waitForFences(*frameData.DrawFence, vk::True, UINT64_MAX);
+        m_RhiDevice->WaitForFence(m_FrameFence.Get(), frameData.LastSubmitValue);
         m_FrameWaitMs += MillisecondsSince(fenceWaitStart);
-        if (fenceResult != vk::Result::eSuccess)
-            throw std::runtime_error("Failed to wait for fence!");
 
         const auto acquireStart = std::chrono::steady_clock::now();
         const Rhi::AcquiredImage image = m_PresentTarget->Acquire();
@@ -853,8 +851,6 @@ private:
             RecreateSwapchainAndRenderImages();
             return;
         }
-
-        m_Device.resetFences(*frameData.DrawFence);
 
         UpdateGlobalBuffer(m_FrameIndex);
         UpdateInstanceBuffer(m_FrameIndex);
@@ -893,51 +889,28 @@ private:
         }
 
         // TODO: even when ImGui is not showing, it's being submitted
-        const std::array<vk::CommandBuffer, 7> commandBuffers = {
-            Rhi::Vulkan::GetNative(*frameData.DrawLayoutCommands.List),
-            Rhi::Vulkan::GetNative(*frameData.OpaqueCommands.List),
-            Rhi::Vulkan::GetNative(*frameData.TransparentCommands.List),
-            Rhi::Vulkan::GetNative(*frameData.CloudCommands.List),
-            Rhi::Vulkan::GetNative(*frameData.CompositeCommands.List),
-            Rhi::Vulkan::GetNative(*frameData.ImGuiCommands.List),
-            Rhi::Vulkan::GetNative(*frameData.FinalLayoutCommands.List)};
-        // Every semaphore here belongs to the present target; the submit is still
-        // the renderer's, so it names them through the native accessor.
-        //
+        const std::array<Rhi::ICommandList*, 7> commandLists = {
+            frameData.DrawLayoutCommands.List,  frameData.OpaqueCommands.List,
+            frameData.TransparentCommands.List, frameData.CloudCommands.List,
+            frameData.CompositeCommands.List,   frameData.ImGuiCommands.List,
+            frameData.FinalLayoutCommands.List};
         // The waits arrive as a span because how many there are is the target's
         // business: a swapchain hands back the one its acquire signalled, and a
         // headless target hands back the previous write of the same image, or
-        // nothing at all on the first pass. They share one destination stage
-        // because they say the same thing — this image is not safe to write yet
-        // — and the first write to it is the colour attachment output.
-        //
-        // Fixed capacity rather than a per-frame allocation. Both targets hand
-        // back at most one today; a target that grew a third would fail here
-        // rather than quietly having a wait dropped.
-        std::array<vk::Semaphore, 4> waitSemaphores{};
-        std::array<vk::PipelineStageFlags, waitSemaphores.size()> waitStages{};
-        if (image.WaitSemaphores.size() > waitSemaphores.size())
-            throw std::runtime_error("The present target asked for more acquire waits than the "
-                                     "frame loop can submit!");
+        // nothing at all on the first pass.
+        const Rhi::SemaphoreHandle renderComplete =
+            m_PresentTarget->GetRenderCompleteSemaphore(image.Index);
 
-        for (size_t i = 0; i < image.WaitSemaphores.size(); i++)
-        {
-            waitSemaphores[i] = Rhi::Vulkan::GetSemaphore(*m_RhiDevice, image.WaitSemaphores[i]);
-            waitStages[i] = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        }
+        // The value this slot will wait for next time round.
+        frameData.LastSubmitValue = ++m_FrameSubmitCount;
+        const Rhi::FenceOperation signalFrame{.Fence = m_FrameFence.Get(),
+                                              .Value = frameData.LastSubmitValue};
 
-        const vk::Semaphore signalOnComplete = Rhi::Vulkan::GetSemaphore(
-            *m_RhiDevice, m_PresentTarget->GetRenderCompleteSemaphore(image.Index));
-
-        vk::SubmitInfo submitInfo{
-            .waitSemaphoreCount = static_cast<uint32_t>(image.WaitSemaphores.size()),
-            .pWaitSemaphores = waitSemaphores.data(),
-            .pWaitDstStageMask = waitStages.data(),
-            .commandBufferCount = static_cast<uint32_t>(commandBuffers.size()),
-            .pCommandBuffers = commandBuffers.data(),
-            .signalSemaphoreCount = 1u,
-            .pSignalSemaphores = &signalOnComplete};
-        m_GraphicsQueue.submit(submitInfo, *frameData.DrawFence);
+        m_RhiDevice->Submit(Rhi::SubmitDesc{.Queue = Rhi::QueueType::Graphics,
+                                            .CommandLists = commandLists,
+                                            .SignalFences = {&signalFrame, 1u},
+                                            .WaitSemaphores = image.WaitSemaphores,
+                                            .SignalSemaphores = {&renderComplete, 1u}});
 
         const auto presentStart = std::chrono::steady_clock::now();
         const bool bPresented = m_PresentTarget->Present(image.Index);
@@ -1638,13 +1611,13 @@ private:
         // The semaphores ordering acquire and present belong to the present
         // target: they have to be rebuilt in lockstep with the images they order
         // access to, and only the object owning the images knows when that is.
-        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
-        {
-            m_Frames[i].DrawFence =
-                vk::raii::Fence(m_Device, {.flags = vk::FenceCreateFlagBits::eSignaled});
-            SetVkDebugName(m_Device, *m_Frames[i].DrawFence, vk::ObjectType::eFence,
-                           std::format("Draw Fence_{}", i).c_str());
-        }
+        //
+        // One fence rather than one per frame in flight. A neutral fence is a
+        // monotonic counter, so a single counter and a value per slot says
+        // everything a fence each would: the slot records the value its last
+        // submission signals and waits for exactly that.
+        m_FrameFence = Rhi::UniqueHandle<Rhi::FenceHandle>(
+            *m_RhiDevice, m_RhiDevice->CreateFence(Rhi::FenceDesc{.DebugName = "Frame Fence"}));
     }
 
     void RecreateSwapchainAndRenderImages()
@@ -2265,6 +2238,14 @@ private:
     vk::raii::PhysicalDevice& m_PhysicalDevice;
     vk::raii::Device& m_Device;
     vk::raii::Queue& m_GraphicsQueue;
+
+    /**
+     * The frame loop's fence, and the last value handed to it. Monotonic, so it
+     * is never reset -- each frame signals the next value and each slot
+     * remembers its own.
+     */
+    Rhi::UniqueHandle<Rhi::FenceHandle> m_FrameFence;
+    uint64_t m_FrameSubmitCount = 0u;
     uint32_t m_QueueIndex;
 
     std::unique_ptr<Rhi::IPresentTarget> m_PresentTarget;

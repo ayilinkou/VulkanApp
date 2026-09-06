@@ -21,6 +21,7 @@
 #include "vulkan/OffscreenTarget.h"
 #include "vulkan/SwapchainTarget.h"
 #include "vulkan/VulkanCommandAllocator.h"
+#include "vulkan/VulkanCommandList.h"
 #include "vulkan/VulkanConversions.h"
 #include "vulkan/VulkanPipelineCache.h"
 #include "vulkan/VulkanUploadContext.h"
@@ -160,11 +161,12 @@ VulkanDevice::~VulkanDevice()
     // resources through handles is that the count is knowable. Reported rather
     // than asserted so that a shutdown already unwinding from an error is not
     // made worse.
-    const std::array<std::pair<const char*, uint32_t>, 4> live{
+    const std::array<std::pair<const char*, uint32_t>, 5> live{
         std::pair{"buffer", m_Buffers.Size()},
         std::pair{"texture", m_Textures.Size()},
         std::pair{"texture view", m_TextureViews.Size()},
         std::pair{"sampler", m_Samplers.Size()},
+        std::pair{"fence", m_Fences.Size()},
     };
 
     bool bAnyLive = false;
@@ -183,7 +185,8 @@ VulkanDevice::~VulkanDevice()
     if (!bAnyLive)
     {
         Core::LogMsg(Core::LogSeverity::Info, LogRhi,
-                     "Device destroyed with 0 live buffers, textures, texture views and samplers.");
+                     "Device destroyed with 0 live buffers, textures, texture views, samplers "
+                     "and fences.");
     }
 }
 
@@ -534,6 +537,147 @@ vk::Semaphore VulkanDevice::GetSemaphore(SemaphoreHandle handle) const
     return pSemaphore ? *pSemaphore->Semaphore : vk::Semaphore{};
 }
 
+FenceHandle VulkanDevice::CreateFence(const FenceDesc& desc)
+{
+    const vk::StructureChain<vk::SemaphoreCreateInfo, vk::SemaphoreTypeCreateInfo> createInfo{
+        {}, {.semaphoreType = vk::SemaphoreType::eTimeline, .initialValue = desc.InitialValue}};
+
+    VulkanFence fence{vk::raii::Semaphore(m_Device, createInfo.get<vk::SemaphoreCreateInfo>())};
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *fence.Timeline, vk::ObjectType::eSemaphore,
+                       desc.DebugName.c_str());
+    }
+
+    return m_Fences.Create(std::move(fence));
+}
+
+void VulkanDevice::Destroy(FenceHandle handle)
+{
+    if (m_Fences.Release(handle))
+        return;
+
+    ReportDiagnostic(DiagnosticSeverity::Error,
+                     std::format("Rhi::VulkanDevice::Destroy(FenceHandle): handle {:#010x} is "
+                                 "stale or was never valid; it may have been destroyed already.",
+                                 handle.Value));
+}
+
+void VulkanDevice::WaitForFence(FenceHandle handle, uint64_t value)
+{
+    const VulkanFence* pFence = m_Fences.Get(handle);
+    if (pFence == nullptr)
+    {
+        ReportStaleHandle(std::format(
+            "Rhi::VulkanDevice::WaitForFence: handle {:#010x} is stale or was never valid.",
+            handle.Value));
+        return;
+    }
+
+    const vk::Semaphore timeline = *pFence->Timeline;
+    const vk::SemaphoreWaitInfo waitInfo{
+        .semaphoreCount = 1u, .pSemaphores = &timeline, .pValues = &value};
+
+    const vk::Result result =
+        m_Device.waitSemaphores(waitInfo, std::numeric_limits<uint64_t>::max());
+    if (result != vk::Result::eSuccess)
+        throw std::runtime_error("Rhi::VulkanDevice::WaitForFence: the wait did not succeed.");
+}
+
+void VulkanDevice::Submit(const SubmitDesc& desc)
+{
+    // Fixed capacities rather than per-submit allocations: this runs once per
+    // frame per queue, and the counts are bounded by what the frame actually
+    // has. Overflowing throws rather than silently dropping a wait, which is the
+    // failure mode that would corrupt a frame invisibly.
+    constexpr size_t kMaxLists = 16u;
+    constexpr size_t kMaxSyncs = 8u;
+
+    if (desc.CommandLists.size() > kMaxLists ||
+        desc.WaitFences.size() + desc.WaitSemaphores.size() > kMaxSyncs ||
+        desc.SignalFences.size() + desc.SignalSemaphores.size() > kMaxSyncs)
+    {
+        throw std::runtime_error("Rhi::VulkanDevice::Submit: more lists or synchronization "
+                                 "operations than a submission is sized for.");
+    }
+
+    std::array<vk::CommandBufferSubmitInfo, kMaxLists> lists{};
+    for (size_t i = 0; i < desc.CommandLists.size(); i++)
+    {
+        const VulkanCommandList* pList =
+            static_cast<const VulkanCommandList*>(desc.CommandLists[i]);
+        lists[i] = vk::CommandBufferSubmitInfo{.commandBuffer = pList->Native()};
+    }
+
+    std::array<vk::SemaphoreSubmitInfo, kMaxSyncs> waits{};
+    size_t waitCount = 0u;
+    for (const FenceOperation& wait : desc.WaitFences)
+    {
+        const VulkanFence* pFence = m_Fences.Get(wait.Fence);
+        if (pFence == nullptr)
+        {
+            ReportStaleHandle(std::format(
+                "Rhi::VulkanDevice::Submit: wait fence {:#010x} is stale or was never valid.",
+                wait.Fence.Value));
+            continue;
+        }
+
+        // AllCommands because a fence wait orders whole submissions against one
+        // another: D3D12's queue wait has no stage at all, so narrowing this
+        // would be expressing something the neutral API cannot say.
+        waits[waitCount++] =
+            vk::SemaphoreSubmitInfo{.semaphore = *pFence->Timeline,
+                                    .value = wait.Value,
+                                    .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
+    }
+    for (const SemaphoreHandle handle : desc.WaitSemaphores)
+    {
+        // ColorAttachmentOutput: the only semaphores that reach here guard writes
+        // to an image a present target just handed out, and that is the first
+        // stage which can write one. See SubmitDesc on why the caller does not
+        // name a stage.
+        waits[waitCount++] = vk::SemaphoreSubmitInfo{
+            .semaphore = GetSemaphore(handle),
+            .stageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput};
+    }
+
+    std::array<vk::SemaphoreSubmitInfo, kMaxSyncs> signals{};
+    size_t signalCount = 0u;
+    for (const FenceOperation& signal : desc.SignalFences)
+    {
+        const VulkanFence* pFence = m_Fences.Get(signal.Fence);
+        if (pFence == nullptr)
+        {
+            ReportStaleHandle(std::format(
+                "Rhi::VulkanDevice::Submit: signal fence {:#010x} is stale or was never valid.",
+                signal.Fence.Value));
+            continue;
+        }
+
+        signals[signalCount++] =
+            vk::SemaphoreSubmitInfo{.semaphore = *pFence->Timeline,
+                                    .value = signal.Value,
+                                    .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
+    }
+    for (const SemaphoreHandle handle : desc.SignalSemaphores)
+    {
+        signals[signalCount++] =
+            vk::SemaphoreSubmitInfo{.semaphore = GetSemaphore(handle),
+                                    .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
+    }
+
+    const vk::SubmitInfo2 submitInfo{.waitSemaphoreInfoCount = static_cast<uint32_t>(waitCount),
+                                     .pWaitSemaphoreInfos = waits.data(),
+                                     .commandBufferInfoCount =
+                                         static_cast<uint32_t>(desc.CommandLists.size()),
+                                     .pCommandBufferInfos = lists.data(),
+                                     .signalSemaphoreInfoCount = static_cast<uint32_t>(signalCount),
+                                     .pSignalSemaphoreInfos = signals.data()};
+
+    GetQueue(desc.Queue).submit2(submitInfo);
+}
+
 void VulkanDevice::ReportStaleHandle(std::string_view what) const
 {
     ReportDiagnostic(DiagnosticSeverity::Error, what);
@@ -783,10 +927,12 @@ bool VulkanDevice::IsPhysicalDeviceSuitable(const vk::raii::PhysicalDevice& devi
 
     auto features =
         device.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
+                            vk::PhysicalDeviceVulkan12Features,
                             vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
     bool bSupportsAllFeatures =
         features.get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy &&
         features.get<vk::PhysicalDeviceFeatures2>().features.independentBlend &&
+        features.get<vk::PhysicalDeviceVulkan12Features>().timelineSemaphore &&
         features.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
         features.get<vk::PhysicalDeviceVulkan13Features>().synchronization2 &&
         features.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
@@ -975,16 +1121,22 @@ void VulkanDevice::CreateLogicalDevice(const DeviceRequirements& requirements)
                                       .pQueuePriorities = &queuePriority});
     }
 
-    vk::StructureChain<
-        vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
-        vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
-        vk::PhysicalDeviceDescriptorIndexingFeaturesEXT, vk::PhysicalDeviceMaintenance8FeaturesKHR,
-        vk::PhysicalDeviceMaintenance9FeaturesKHR>
+    vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
+                       vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
+                       vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
+                       vk::PhysicalDeviceMaintenance8FeaturesKHR,
+                       vk::PhysicalDeviceMaintenance9FeaturesKHR>
         featureChain = {{.features = {.independentBlend = true, .samplerAnisotropy = true}},
                         {.shaderDrawParameters = true},
+                        // descriptorBindingPartiallyBound belongs here rather than
+                        // in a VkPhysicalDeviceDescriptorIndexingFeatures of its
+                        // own: descriptor indexing was promoted into Vulkan 1.2,
+                        // and chaining both structures is forbidden outright by
+                        // VUID-VkDeviceCreateInfo-pNext-02830, so that one feature
+                        // cannot be enabled in one and disabled in the other.
+                        {.descriptorBindingPartiallyBound = true, .timelineSemaphore = true},
                         {.synchronization2 = true, .dynamicRendering = true},
                         {.extendedDynamicState = true},
-                        {.descriptorBindingPartiallyBound = true},
                         {.maintenance8 = true},
                         {.maintenance9 = true}};
 

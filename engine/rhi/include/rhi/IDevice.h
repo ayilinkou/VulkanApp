@@ -7,6 +7,7 @@
 #include <rhi/DeviceDesc.h>
 #include <rhi/Diagnostics.h>
 #include <rhi/Handles.h>
+#include <rhi/ICommandAllocator.h>
 #include <rhi/IPresentTarget.h>
 #include <rhi/PipelineCache.h>
 #include <rhi/SamplerDesc.h>
@@ -138,6 +139,18 @@ public:
      */
     [[nodiscard]] virtual std::unique_ptr<IUploadContext>
     CreateUploadContext(const UploadContextDesc& desc) = 0;
+
+    /**
+     * --- Command recording ---
+     *
+     * An allocator is the storage lists record into and is not internally
+     * synchronized, so the caller creates one per thread that records: this
+     * engine keeps one per recorder per frame in flight. Handing them out
+     * rather than pooling them internally is what keeps that rule visible at
+     * the point where it has to be obeyed (see ICommandAllocator).
+     */
+    [[nodiscard]] virtual std::unique_ptr<ICommandAllocator>
+    CreateCommandAllocator(const CommandAllocatorDesc& desc) = 0;
 
     /**
      * --- Pipelines ---

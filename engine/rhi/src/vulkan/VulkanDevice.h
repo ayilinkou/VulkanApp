@@ -62,6 +62,9 @@ public:
     [[nodiscard]] std::unique_ptr<IUploadContext>
     CreateUploadContext(const UploadContextDesc& desc) override;
 
+    [[nodiscard]] std::unique_ptr<ICommandAllocator>
+    CreateCommandAllocator(const CommandAllocatorDesc& desc) override;
+
     [[nodiscard]] std::unique_ptr<IPipelineCache>
     CreatePipelineCache(const PipelineCacheDesc& desc) override;
 

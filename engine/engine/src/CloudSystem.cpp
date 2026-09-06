@@ -242,15 +242,16 @@ void CloudSystem::WriteDescriptorSets()
     }
 }
 
-Rhi::BarrierCounts CloudSystem::RecordDispatch(vk::raii::CommandBuffer& cmd, uint32_t frameIndex,
+Rhi::BarrierCounts CloudSystem::RecordDispatch(Rhi::ICommandList& list, uint32_t frameIndex,
                                                vk::raii::DescriptorSet& globalSet,
                                                vk::raii::DescriptorSet& depthSet)
 {
-    std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(m_RhiDevice, *cmd);
-    list->Begin();
+    // Begun and ended by the caller, which owns the allocator the list came from
+    // and submits it alongside the frame's six others.
+    const vk::CommandBuffer cmd = Rhi::Vulkan::GetNative(list);
 
     Rhi::BarrierCounts barrierCounts =
-        list->Barrier(Rhi::BarrierPresets::UndefinedToUnorderedAccess().On(
+        list.Barrier(Rhi::BarrierPresets::UndefinedToUnorderedAccess().On(
             m_OutputTextures[frameIndex].GetHandle()));
 
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *m_Pipeline);
@@ -262,10 +263,8 @@ Rhi::BarrierCounts CloudSystem::RecordDispatch(vk::raii::CommandBuffer& cmd, uin
 
     cmd.dispatch((m_OutputWidth + 7) / 8, (m_OutputHeight + 7) / 8, 1);
 
-    barrierCounts += list->Barrier(Rhi::BarrierPresets::UnorderedAccessToShaderResource().On(
+    barrierCounts += list.Barrier(Rhi::BarrierPresets::UnorderedAccessToShaderResource().On(
         m_OutputTextures[frameIndex].GetHandle()));
-
-    list->End();
 
     return barrierCounts;
 }

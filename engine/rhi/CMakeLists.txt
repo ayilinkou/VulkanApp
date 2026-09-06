@@ -12,6 +12,7 @@ engine_module(
   src/vulkan/VulkanBuffer.cpp
   src/vulkan/VulkanTexture.cpp
   src/vulkan/VulkanCommandList.cpp
+  src/vulkan/VulkanCommandAllocator.cpp
   src/vulkan/VulkanUploadContext.cpp
   src/vulkan/PipelineBuilder.cpp
   src/vulkan/VulkanPipelineCache.cpp

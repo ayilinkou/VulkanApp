@@ -528,7 +528,7 @@ private:
                                                    *m_MaterialFactory);
 
         CreatePipelines();
-        CreateCommandBuffers();
+        CreateCommandAllocators();
         CreateGlobalBuffers();
         CreateInstanceBuffers(m_Config.InitialInstanceCapacity);
         CreateRenderTargets();
@@ -893,11 +893,14 @@ private:
         }
 
         // TODO: even when ImGui is not showing, it's being submitted
-        std::array<vk::CommandBuffer, 7> commandBuffers = {
-            frameData.DrawLayoutCommandBuffer,  frameData.OpaqueCommandBuffer,
-            frameData.TransparentCommandBuffer, frameData.CloudCommandBuffer,
-            frameData.CompositeCommandBuffer,   frameData.ImGuiCommandBuffer,
-            frameData.FinalLayoutCommandBuffer};
+        const std::array<vk::CommandBuffer, 7> commandBuffers = {
+            Rhi::Vulkan::GetNative(*frameData.DrawLayoutCommands.List),
+            Rhi::Vulkan::GetNative(*frameData.OpaqueCommands.List),
+            Rhi::Vulkan::GetNative(*frameData.TransparentCommands.List),
+            Rhi::Vulkan::GetNative(*frameData.CloudCommands.List),
+            Rhi::Vulkan::GetNative(*frameData.CompositeCommands.List),
+            Rhi::Vulkan::GetNative(*frameData.ImGuiCommands.List),
+            Rhi::Vulkan::GetNative(*frameData.FinalLayoutCommands.List)};
         // Every semaphore here belongs to the present target; the submit is still
         // the renderer's, so it names them through the native accessor.
         //
@@ -1223,123 +1226,60 @@ private:
     {
         LogMsg(LogSeverity::Info, LogRenderer, "CreateCommandPools()");
 
-        vk::CommandPoolCreateInfo createInfo{.flags =
-                                                 vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-                                             .queueFamilyIndex = m_QueueIndex};
+        // The last raw pool the engine owns. The per-frame pools are
+        // ICommandAllocators now; this one stays because CloudSystem's noise bake
+        // reaches it through CommandListUtil, which begins, submits and waits on a
+        // one-shot buffer. That needs submission behind the RHI as well as dispatch
+        // recording, so it goes once both exist.
+        const vk::CommandPoolCreateInfo createInfo{
+            .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+            .queueFamilyIndex = m_QueueIndex};
         m_GenericCommandPool = vk::raii::CommandPool(m_Device, createInfo);
         SetVkDebugName(m_Device, *m_GenericCommandPool, vk::ObjectType::eCommandPool,
                        "Generic Command Pool");
-
-        createInfo = vk::CommandPoolCreateInfo{.queueFamilyIndex = m_QueueIndex};
-        for (size_t i = 0u; i < m_Config.FramesInFlight; i++)
-        {
-            FrameData& frame = m_Frames[i];
-
-            frame.DrawLayoutCommandPool = vk::raii::CommandPool(m_Device, createInfo);
-            SetVkDebugName(m_Device, *frame.DrawLayoutCommandPool, vk::ObjectType::eCommandPool,
-                           std::format("Draw Layout Command Pool Frame {}", i).c_str());
-
-            frame.OpaqueCommandPool = vk::raii::CommandPool(m_Device, createInfo);
-            SetVkDebugName(m_Device, *frame.OpaqueCommandPool, vk::ObjectType::eCommandPool,
-                           std::format("Opaque Command Pool Frame {}", i).c_str());
-
-            frame.CloudCommandPool = vk::raii::CommandPool(m_Device, createInfo);
-            SetVkDebugName(m_Device, *frame.CloudCommandPool, vk::ObjectType::eCommandPool,
-                           std::format("Cloud Command Pool Frame {}", i).c_str());
-
-            frame.TransparentCommandPool = vk::raii::CommandPool(m_Device, createInfo);
-            SetVkDebugName(m_Device, *frame.TransparentCommandPool, vk::ObjectType::eCommandPool,
-                           std::format("Transparent Command Pool Frame {}", i).c_str());
-
-            frame.CompositeCommandPool = vk::raii::CommandPool(m_Device, createInfo);
-            SetVkDebugName(m_Device, *frame.CompositeCommandPool, vk::ObjectType::eCommandPool,
-                           std::format("Composite Command Pool Frame {}", i).c_str());
-
-            frame.ImGuiCommandPool = vk::raii::CommandPool(m_Device, createInfo);
-            SetVkDebugName(m_Device, *frame.ImGuiCommandPool, vk::ObjectType::eCommandPool,
-                           std::format("ImGui Command Pool Frame {}", i).c_str());
-
-            frame.FinalLayoutCommandPool = vk::raii::CommandPool(m_Device, createInfo);
-            SetVkDebugName(m_Device, *frame.FinalLayoutCommandPool, vk::ObjectType::eCommandPool,
-                           std::format("Final Layout Command Pool Frame {}", i).c_str());
-        }
     }
 
-    void CreateCommandBuffers()
+    void CreateCommandAllocators()
     {
-        LogMsg(LogSeverity::Info, LogRenderer, "CreateCommandBuffers()");
+        LogMsg(LogSeverity::Info, LogRenderer, "CreateCommandAllocators()");
 
+        // Graphics for all seven, the cloud dispatch included: the frame is one
+        // submit to the graphics queue, so every list in it has to come from an
+        // allocator that queue accepts.
         for (size_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             FrameData& frame = m_Frames[i];
-            vk::CommandBufferAllocateInfo allocInfo;
-            vk::raii::CommandBuffer cmd({});
 
-            allocInfo = vk::CommandBufferAllocateInfo{.commandPool = frame.DrawLayoutCommandPool,
-                                                      .level = vk::CommandBufferLevel::ePrimary,
-                                                      .commandBufferCount = 1u};
-            cmd = std::move(vk::raii::CommandBuffers(m_Device, allocInfo).front());
+            const auto make = [&](const char* name)
+            {
+                return m_RhiDevice->CreateCommandAllocator(
+                    Rhi::CommandAllocatorDesc{.Queue = Rhi::QueueType::Graphics,
+                                              .DebugName = std::format("{} Frame {}", name, i)});
+            };
 
-            frame.DrawLayoutCommandBuffer = std::move(cmd);
-            SetVkDebugName(m_Device, *frame.DrawLayoutCommandBuffer, vk::ObjectType::eCommandBuffer,
-                           std::format("Draw Layout Command Buffer Frame {}", i).c_str());
-
-            allocInfo = vk::CommandBufferAllocateInfo{.commandPool = frame.OpaqueCommandPool,
-                                                      .level = vk::CommandBufferLevel::ePrimary,
-                                                      .commandBufferCount = 1u};
-            cmd = std::move(vk::raii::CommandBuffers(m_Device, allocInfo).front());
-
-            frame.OpaqueCommandBuffer = std::move(cmd);
-            SetVkDebugName(m_Device, *frame.OpaqueCommandBuffer, vk::ObjectType::eCommandBuffer,
-                           std::format("Opaque Command Buffer Frame {}", i).c_str());
-
-            allocInfo = vk::CommandBufferAllocateInfo{.commandPool = frame.CloudCommandPool,
-                                                      .level = vk::CommandBufferLevel::ePrimary,
-                                                      .commandBufferCount = 1u};
-            cmd = std::move(vk::raii::CommandBuffers(m_Device, allocInfo).front());
-
-            frame.CloudCommandBuffer = std::move(cmd);
-            SetVkDebugName(m_Device, *frame.CloudCommandBuffer, vk::ObjectType::eCommandBuffer,
-                           std::format("Cloud Command Buffer Frame {}", i).c_str());
-
-            allocInfo = vk::CommandBufferAllocateInfo{.commandPool = frame.TransparentCommandPool,
-                                                      .level = vk::CommandBufferLevel::ePrimary,
-                                                      .commandBufferCount = 1u};
-            cmd = std::move(vk::raii::CommandBuffers(m_Device, allocInfo).front());
-
-            frame.TransparentCommandBuffer = std::move(cmd);
-            SetVkDebugName(m_Device, *frame.TransparentCommandBuffer,
-                           vk::ObjectType::eCommandBuffer,
-                           std::format("Transparent Command Buffer Frame {}", i).c_str());
-
-            allocInfo = vk::CommandBufferAllocateInfo{.commandPool = frame.CompositeCommandPool,
-                                                      .level = vk::CommandBufferLevel::ePrimary,
-                                                      .commandBufferCount = 1u};
-            cmd = std::move(vk::raii::CommandBuffers(m_Device, allocInfo).front());
-
-            frame.CompositeCommandBuffer = std::move(cmd);
-            SetVkDebugName(m_Device, *frame.CompositeCommandBuffer, vk::ObjectType::eCommandBuffer,
-                           std::format("Composite Command Buffer Frame {}", i).c_str());
-
-            allocInfo = vk::CommandBufferAllocateInfo{.commandPool = frame.ImGuiCommandPool,
-                                                      .level = vk::CommandBufferLevel::ePrimary,
-                                                      .commandBufferCount = 1u};
-            cmd = std::move(vk::raii::CommandBuffers(m_Device, allocInfo).front());
-
-            frame.ImGuiCommandBuffer = std::move(cmd);
-            SetVkDebugName(m_Device, *frame.ImGuiCommandBuffer, vk::ObjectType::eCommandBuffer,
-                           std::format("ImGui Command Buffer Frame {}", i).c_str());
-
-            allocInfo = vk::CommandBufferAllocateInfo{.commandPool = frame.FinalLayoutCommandPool,
-                                                      .level = vk::CommandBufferLevel::ePrimary,
-                                                      .commandBufferCount = 1u};
-            cmd = std::move(vk::raii::CommandBuffers(m_Device, allocInfo).front());
-
-            frame.FinalLayoutCommandBuffer = std::move(cmd);
-            SetVkDebugName(m_Device, *frame.FinalLayoutCommandBuffer,
-                           vk::ObjectType::eCommandBuffer,
-                           std::format("Final Layout Command Buffer Frame {}", i).c_str());
+            frame.DrawLayoutCommands.Allocator = make("Draw Layout Commands");
+            frame.OpaqueCommands.Allocator = make("Opaque Commands");
+            frame.CloudCommands.Allocator = make("Cloud Commands");
+            frame.TransparentCommands.Allocator = make("Transparent Commands");
+            frame.CompositeCommands.Allocator = make("Composite Commands");
+            frame.ImGuiCommands.Allocator = make("ImGui Commands");
+            frame.FinalLayoutCommands.Allocator = make("Final Layout Commands");
         }
+    }
+
+    /**
+     * Recycles a recorder's allocator and opens a list on it for this frame.
+     *
+     * Safe at this point because the frame's fence has already been waited on, so
+     * nothing this allocator produced last time round is still executing -- which
+     * is the one condition Reset() cannot check for itself.
+     */
+    Rhi::ICommandList& BeginRecording(FrameRecorder& recorder)
+    {
+        recorder.Allocator->Reset();
+        recorder.List = &recorder.Allocator->Acquire();
+        recorder.List->Begin();
+        return *recorder.List;
     }
 
     /**
@@ -1389,10 +1329,8 @@ private:
     void RecordOpaqueCommandBuffer()
     {
         FrameData& frame = m_Frames[m_FrameIndex];
-        frame.OpaqueCommandPool.reset();
-        vk::raii::CommandBuffer& cmd = frame.OpaqueCommandBuffer;
-        std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(*m_RhiDevice, *cmd);
-        list->Begin();
+        Rhi::ICommandList* list = &BeginRecording(frame.OpaqueCommands);
+        const vk::CommandBuffer cmd = Rhi::Vulkan::GetNative(*list);
 
         const std::array openingBarriers{
             Rhi::BarrierPresets::UndefinedToDepthStencilWrite().On(frame.DepthTexture.GetHandle()),
@@ -1473,20 +1411,19 @@ private:
     void RecordCloudsCommandBuffer()
     {
         FrameData& frame = m_Frames[m_FrameIndex];
-        frame.CloudCommandPool.reset();
+        Rhi::ICommandList& list = BeginRecording(frame.CloudCommands);
 
         m_MainThreadBarrierCounts += m_CloudSystem->RecordDispatch(
-            frame.CloudCommandBuffer, m_FrameIndex, frame.GlobalBufferDescriptorSet,
-            frame.DepthBufferDescriptorSet);
+            list, m_FrameIndex, frame.GlobalBufferDescriptorSet, frame.DepthBufferDescriptorSet);
+
+        list.End();
     }
 
     void RecordTransparentCommandBuffer()
     {
         FrameData& frame = m_Frames[m_FrameIndex];
-        frame.TransparentCommandPool.reset();
-        vk::raii::CommandBuffer& cmd = frame.TransparentCommandBuffer;
-        std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(*m_RhiDevice, *cmd);
-        list->Begin();
+        Rhi::ICommandList* list = &BeginRecording(frame.TransparentCommands);
+        const vk::CommandBuffer cmd = Rhi::Vulkan::GetNative(*list);
 
         const std::array openingBarriers{
             Rhi::BarrierPresets::UndefinedToRenderTarget().On(frame.AccumTexture.GetHandle()),
@@ -1562,10 +1499,8 @@ private:
     void RecordCompositeCommandBuffer(const Rhi::AcquiredImage& image)
     {
         FrameData& frame = m_Frames[m_FrameIndex];
-        frame.CompositeCommandPool.reset();
-        vk::raii::CommandBuffer& cmd = frame.CompositeCommandBuffer;
-        std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(*m_RhiDevice, *cmd);
-        list->Begin();
+        Rhi::ICommandList* list = &BeginRecording(frame.CompositeCommands);
+        const vk::CommandBuffer cmd = Rhi::Vulkan::GetNative(*list);
 
         const std::array openingBarriers{
             Rhi::BarrierPresets::RenderTargetToShaderResource().On(frame.OpaqueTexture.GetHandle()),
@@ -1615,10 +1550,8 @@ private:
 
     void RecordImGui(const Rhi::AcquiredImage& image)
     {
-        m_Frames[m_FrameIndex].ImGuiCommandPool.reset();
-        vk::raii::CommandBuffer& cmd = m_Frames[m_FrameIndex].ImGuiCommandBuffer;
-        std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(*m_RhiDevice, *cmd);
-        list->Begin();
+        Rhi::ICommandList* list = &BeginRecording(m_Frames[m_FrameIndex].ImGuiCommands);
+        const vk::CommandBuffer cmd = Rhi::Vulkan::GetNative(*list);
 
         // ImGui draws over the composited frame with loadOp eLoad, so the
         // composite pass's writes have to be visible to this pass's load.
@@ -1651,10 +1584,7 @@ private:
 
     void RecordSwapImageToDrawLayout(const Rhi::AcquiredImage& image)
     {
-        m_Frames[m_FrameIndex].DrawLayoutCommandPool.reset();
-        vk::raii::CommandBuffer& cmd = m_Frames[m_FrameIndex].DrawLayoutCommandBuffer;
-        std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(*m_RhiDevice, *cmd);
-        list->Begin();
+        Rhi::ICommandList* list = &BeginRecording(m_Frames[m_FrameIndex].DrawLayoutCommands);
         m_MainThreadBarrierCounts +=
             list->Barrier(Rhi::BarrierPresets::AcquiredImageToRenderTarget().On(image.Texture));
         list->End();
@@ -1662,10 +1592,7 @@ private:
 
     void RecordSwapImageToFinalLayout(const Rhi::AcquiredImage& image, bool captureScreenshot)
     {
-        m_Frames[m_FrameIndex].FinalLayoutCommandPool.reset();
-        vk::raii::CommandBuffer& cmd = m_Frames[m_FrameIndex].FinalLayoutCommandBuffer;
-        std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(*m_RhiDevice, *cmd);
-        list->Begin();
+        Rhi::ICommandList* list = &BeginRecording(m_Frames[m_FrameIndex].FinalLayoutCommands);
 
         const Rhi::TextureHandle swapTexture = image.Texture;
 

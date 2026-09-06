@@ -590,11 +590,19 @@ applies to every step here without anything being switched on first.
 ### 1 — Command allocators and command lists
 
 - **Do:** `ICommandAllocator` per queue type, caller-owned, one per frame per recorder, reset
-  as a unit and handing out `ICommandList`s (D19). The engine's seven-per-frame pools plus its
-  generic pool move behind the RHI as allocators. The engine still submits its own lists on its
-  own queue, recording through the escape hatch.
+  as a unit and handing out `ICommandList`s (D19). The engine's seven-per-frame pools move
+  behind the RHI as allocators. The engine still submits its own lists on its own queue,
+  recording through the escape hatch.
 - **Verify:** baseline unchanged, counters unchanged.
 - **Size:** M
+- **Done.** Amended while building: the **generic pool stays raw**, against this step's
+  original wording. `CloudSystem`'s noise bake reaches it through `CommandListUtil`, which
+  begins, submits and waits on a one-shot buffer — so converting it needs submission behind the
+  RHI *and* dispatch recording, which is steps 2 and 11. Forcing it here would have meant
+  handing a raw pool back out of an allocator, widening the escape hatch to narrow it later.
+  One thing came free in the other direction: `CloudSystem::RecordDispatch` now takes an
+  `ICommandList&` rather than a `vk::raii::CommandBuffer&`, since the caller owns the allocator
+  and must begin and end the list anyway.
 
 ### 2 — Submission and fences
 
@@ -604,9 +612,11 @@ applies to every step here without anything being switched on first.
   `SemaphoreHandle` and stay behind `IPresentTarget`.
 - **Retires:** `tests/support/GpuReadback.h`'s and `tests/gpu/rhi/PresentTargetTests.cpp`'s
   `VulkanNative.h` entries — both are submission and fence waiting rather than recording.
-- **Verify:** baseline unchanged; zero validation errors. `backlog.md`'s "drop the wait
-  semaphore and the suite still passes" experiment should now fail as it is supposed to — see
-  §9, which asks what that experiment actually does today before this step relies on it.
+- **Verify:** baseline unchanged; zero validation errors. **Do not treat a clean sync
+  validation run as evidence that submission moved correctly** — §9 establishes that the suite
+  is not currently known to detect a missing cross-submit dependency, which is precisely the
+  hazard class this step introduces. The evidence this step actually needs is the cross-submit
+  hazard test in `backlog.md`, written first and required to fail before the step begins.
 - **Size:** L
 
 ### 3 — Rendering scope and dynamic state
@@ -860,17 +870,27 @@ per-draw constants and pipelines — and they are, near enough, this document's 
 
 ## 9. Open investigations
 
-Neither is a design question. Both are facts to go and establish, and each has a step that
-depends on the answer.
+Neither is a design question — both are facts to go and establish, and each has a step that
+depends on the answer. The first was run on 6 September 2026 and is recorded here with its
+result, because what it found changes what step 2 is allowed to claim rather than simply
+closing.
 
-**1. What does the dropped-semaphore experiment actually do today?** `backlog.md` records that
-`tests/gpu/rhi/PresentTargetTests.cpp` asserts a synchronization dependency it cannot detect:
-"with sync validation off, dropping the wait semaphore from an offscreen read still passes".
-But sync validation is *not* off — `validate_sync` is hardcoded `VK_TRUE`, and the GPU tests
-enable validation unconditionally. Either that row predates the `validate_sync` line and is
-stale, or the experiment still passes with sync validation on, which would be considerably more
-interesting than the row describes. **Do this before step 2**, which is the step that would rest
-on the answer, and correct the backlog row either way.
+**1. ~~What does the dropped-semaphore experiment actually do today?~~ Done 6 September 2026,
+and the answer is the uncomfortable one.** Sync validation is on and demonstrably working — two
+unbarriered copies to one buffer produce `WRITE_AFTER_WRITE hazard detected`, and a wrong
+`oldLayout` fails through `ValidationGuard` — yet dropping the wait semaphore from the offscreen
+read leaves all eighteen gpu tests passing, as does additionally weakening the readback
+barrier's source scope. Forcing syncval externally changes nothing.
+
+Two explanations survive with opposite consequences: either there is no hazard, because both
+submits are on the graphics queue and a barrier's first synchronization scope covers commands
+earlier in submission order; or syncval does not track this hazard class here. Settling it needs
+specification text that was not reachable at the time. `backlog.md` carries the full record.
+
+**What follows for this stage:** step 2's verification may not lean on sync validation being
+clean. The cross-submit hazard test — a deliberately unsynchronised read-after-write that is
+*required* to fail — is what makes that signal mean something, and it is written before step 2
+rather than after it.
 
 **2. What does Slang's DXIL path require?** Profile and target flags, whether a separate
 validator is needed, and what the emitted DXIL needs at load time. Determines the size of Stage

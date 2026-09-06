@@ -74,6 +74,11 @@ public:
         return nullptr;
     }
 
+    std::unique_ptr<ICommandAllocator> CreateCommandAllocator(const CommandAllocatorDesc&) override
+    {
+        return nullptr;
+    }
+
     std::unique_ptr<IPipelineCache> CreatePipelineCache(const PipelineCacheDesc&) override
     {
         return nullptr;

@@ -59,7 +59,7 @@ public:
      * Returns the barriers recorded, so the caller can account for them in the
      * frame's totals.
      */
-    Hikari::Rhi::BarrierCounts RecordDispatch(vk::raii::CommandBuffer& cmd, uint32_t frameIndex,
+    Hikari::Rhi::BarrierCounts RecordDispatch(Hikari::Rhi::ICommandList& list, uint32_t frameIndex,
                                               vk::raii::DescriptorSet& globalSet,
                                               vk::raii::DescriptorSet& depthSet);
     void Resize(uint32_t width, uint32_t height);

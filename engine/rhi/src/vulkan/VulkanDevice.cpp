@@ -20,6 +20,7 @@
 
 #include "vulkan/OffscreenTarget.h"
 #include "vulkan/SwapchainTarget.h"
+#include "vulkan/VulkanCommandAllocator.h"
 #include "vulkan/VulkanConversions.h"
 #include "vulkan/VulkanPipelineCache.h"
 #include "vulkan/VulkanUploadContext.h"
@@ -478,6 +479,12 @@ vk::Sampler VulkanDevice::GetSampler(SamplerHandle handle) const
 std::unique_ptr<IUploadContext> VulkanDevice::CreateUploadContext(const UploadContextDesc& desc)
 {
     return std::make_unique<VulkanUploadContext>(*this, desc);
+}
+
+std::unique_ptr<ICommandAllocator>
+VulkanDevice::CreateCommandAllocator(const CommandAllocatorDesc& desc)
+{
+    return std::make_unique<VulkanCommandAllocator>(*this, desc);
 }
 
 std::unique_ptr<IPipelineCache> VulkanDevice::CreatePipelineCache(const PipelineCacheDesc& desc)

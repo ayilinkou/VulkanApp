@@ -48,9 +48,15 @@ struct FrameData
      * starts at, so the first pass through waits for nothing.
      */
     uint64_t LastSubmitValue = 0u;
-    vk::raii::DescriptorSet GlobalBufferDescriptorSet = nullptr;
-    vk::raii::DescriptorSet CompositeDescriptorSet = nullptr;
-    vk::raii::DescriptorSet DepthBufferDescriptorSet = nullptr;
+    /**
+     * Global never changes -- its buffer is created once and only its contents
+     * are rewritten. Composite and Depth name render targets, so both are
+     * replaced whenever those are recreated: a bind group is immutable, and
+     * replacing one is how its contents change (RHI plan D20).
+     */
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupHandle> GlobalBindGroup;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupHandle> CompositeBindGroup;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupHandle> DepthBindGroup;
     Texture OpaqueTexture;
     Texture AccumTexture;
     Texture RevealageTexture;

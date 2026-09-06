@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 
+#include <rhi/BindGroup.h>
 #include <rhi/BufferDesc.h>
 #include <rhi/DeviceDesc.h>
 #include <rhi/Diagnostics.h>
@@ -152,6 +153,25 @@ public:
      */
     [[nodiscard]] virtual std::unique_ptr<ICommandAllocator>
     CreateCommandAllocator(const CommandAllocatorDesc& desc) = 0;
+
+    /**
+     * --- Binding ---
+     *
+     * A layout is the shape and a group is one filling of it. Groups are
+     * immutable (plan D20): there is no update call, and changing what one
+     * points at means creating another. That is not a restriction the backends
+     * impose -- it is what makes writing a descriptor the GPU is still reading
+     * inexpressible rather than merely discouraged.
+     */
+    virtual BindGroupLayoutHandle CreateBindGroupLayout(const BindGroupLayoutDesc& desc) = 0;
+    virtual void Destroy(BindGroupLayoutHandle handle) = 0;
+
+    virtual BindGroupHandle CreateBindGroup(const BindGroupDesc& desc) = 0;
+    virtual void Destroy(BindGroupHandle handle) = 0;
+
+    /** Counterparts to GetLiveBufferCount, asserted on at the same place. */
+    virtual uint32_t GetLiveBindGroupLayoutCount() const = 0;
+    virtual uint32_t GetLiveBindGroupCount() const = 0;
 
     /**
      * --- Submission and synchronization ---

@@ -18,7 +18,12 @@ engine_test(platform_tests SOURCES unit/platform/PathsTests.cpp
 engine_test(asset_tests SOURCES unit/asset/AssetCacheTests.cpp LIBS Engine::Asset)
 
 engine_test(engine_tests SOURCES unit/engine/ParseEngineOptionTests.cpp
-  LIBS Engine::Engine)
+  unit/engine/BindGroupLayoutInventoryTests.cpp LIBS Engine::Engine)
+
+# The bind group layout inventory lives in the module's private sources, because
+# it is the renderer's own declaration rather than something the RHI publishes.
+# Pinning it (plan D21) is the one reason a test reaches in.
+target_include_directories(engine_tests PRIVATE ${CMAKE_SOURCE_DIR}/engine/engine/src)
 
 engine_test(rhi_tests SOURCES unit/rhi/ConversionTests.cpp
   unit/rhi/DiagnosticsTests.cpp unit/rhi/FormatTests.cpp

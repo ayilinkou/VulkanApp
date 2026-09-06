@@ -102,10 +102,10 @@ void CloudSystem::CreateBakeDescriptorSetLayout()
 }
 
 void CloudSystem::CreatePipeline(const Paths& paths, Rhi::IPipelineCache& pipelineCache,
-                                 vk::raii::DescriptorSetLayout& globalSetLayout,
-                                 vk::raii::DescriptorSetLayout& depthSetLayout)
+                                 vk::DescriptorSetLayout globalSetLayout,
+                                 vk::DescriptorSetLayout depthSetLayout)
 {
-    std::array setLayouts = {*globalSetLayout, *depthSetLayout, *m_SetLayout};
+    std::array setLayouts = {globalSetLayout, depthSetLayout, *m_SetLayout};
     std::array<vk::PushConstantRange, 1> pushRanges = {
         vk::PushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eCompute,
                               .offset = 0,
@@ -243,8 +243,8 @@ void CloudSystem::WriteDescriptorSets()
 }
 
 Rhi::BarrierCounts CloudSystem::RecordDispatch(Rhi::ICommandList& list, uint32_t frameIndex,
-                                               vk::raii::DescriptorSet& globalSet,
-                                               vk::raii::DescriptorSet& depthSet)
+                                               vk::DescriptorSet globalSet,
+                                               vk::DescriptorSet depthSet)
 {
     // Begun and ended by the caller, which owns the allocator the list came from
     // and submits it alongside the frame's six others.
@@ -255,7 +255,7 @@ Rhi::BarrierCounts CloudSystem::RecordDispatch(Rhi::ICommandList& list, uint32_t
             m_OutputTextures[frameIndex].GetHandle()));
 
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *m_Pipeline);
-    std::array<vk::DescriptorSet, 3> sets = {*globalSet, *depthSet, *m_DescriptorSets[frameIndex]};
+    std::array<vk::DescriptorSet, 3> sets = {globalSet, depthSet, *m_DescriptorSets[frameIndex]};
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *m_PipelineLayout, 0, sets, {});
 
     cmd.pushConstants<CloudPushConstants>(*m_PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0,

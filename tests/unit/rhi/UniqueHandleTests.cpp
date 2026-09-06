@@ -79,6 +79,30 @@ public:
         return nullptr;
     }
 
+    BindGroupLayoutHandle CreateBindGroupLayout(const BindGroupLayoutDesc&) override
+    {
+        return BindGroupLayoutHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(BindGroupLayoutHandle handle) override { DestroyedLayouts.push_back(handle); }
+
+    BindGroupHandle CreateBindGroup(const BindGroupDesc&) override
+    {
+        return BindGroupHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(BindGroupHandle handle) override { DestroyedBindGroups.push_back(handle); }
+
+    uint32_t GetLiveBindGroupLayoutCount() const override
+    {
+        return static_cast<uint32_t>(DestroyedLayouts.size());
+    }
+
+    uint32_t GetLiveBindGroupCount() const override
+    {
+        return static_cast<uint32_t>(DestroyedBindGroups.size());
+    }
+
     FenceHandle CreateFence(const FenceDesc&) override
     {
         return FenceHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
@@ -125,6 +149,8 @@ public:
     std::vector<TextureViewHandle> DestroyedViews;
     std::vector<SamplerHandle> DestroyedSamplers;
     std::vector<FenceHandle> DestroyedFences;
+    std::vector<BindGroupLayoutHandle> DestroyedLayouts;
+    std::vector<BindGroupHandle> DestroyedBindGroups;
 
 private:
     DeviceCaps m_Caps{};

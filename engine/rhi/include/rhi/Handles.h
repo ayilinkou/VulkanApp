@@ -23,9 +23,8 @@ using SamplerHandle = Core::Handle<struct SamplerTag>;
  * by itself: D3D12 has exactly one synchronization primitive, ID3D12Fence with
  * a monotonically increasing value, and Vulkan's timeline semaphore matches it.
  *
- * Declared ahead of its first user, which is why nothing takes one yet: the
- * upload context waits on a fence it owns and never shows it, and the frame
- * loop's synchronization still belongs to the application.
+ * IDevice creates, waits on and destroys these, and a submission names one to
+ * signal. The upload context still waits on a fence it owns privately.
  */
 using FenceHandle = Core::Handle<struct FenceTag>;
 
@@ -41,4 +40,16 @@ using FenceHandle = Core::Handle<struct FenceTag>;
  * against RHI-owned work wants a fence and a value.
  */
 using SemaphoreHandle = Core::Handle<struct SemaphoreTag>;
+
+/**
+ * The shape of a bind group: which slots it has, of what kind, visible to which
+ * shader stages. Immutable once created, and shared by every group built to it.
+ */
+using BindGroupLayoutHandle = Core::Handle<struct BindGroupLayoutTag>;
+
+/**
+ * A set of resources bound together, built to a layout. Immutable (plan D20):
+ * changing what it points at means creating another and destroying this one.
+ */
+using BindGroupHandle = Core::Handle<struct BindGroupTag>;
 } // namespace Hikari::Rhi

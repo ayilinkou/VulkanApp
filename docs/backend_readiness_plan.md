@@ -145,16 +145,45 @@ Agility SDK and a recent driver. Below that the shape is descriptor tables with 
 ranges, which is not the same design. D7's "bindless converges the two APIs" holds at the top
 of the stack and weakens underneath it.
 
-**So:** build a neutral binding model scoped to the layouts that exist today — a global
-uniform set, the material set, the composite set and the depth set, plus the push-constant
-ranges those layouts carry. That maps 1:1 onto a Vulkan descriptor set and a D3D12 descriptor
-table plus root constants.
+**So:** build a neutral binding model scoped to the layouts that exist today, plus the
+push-constant ranges those layouts carry. That maps 1:1 onto a Vulkan descriptor set and a
+D3D12 descriptor table plus root constants.
 
 **Correction from the grill.** The first draft said "four layouts and one range". There are
 **four ranges, not one**, and they span two shader stages: fragment `MaterialData` on the
 opaque and transparent layouts, compute `CloudPushConstants` on the cloud dispatch, and compute
 `BakeConstants` on the noise bake. The composite layout has none. The neutral model must
 therefore express a range's stage, not merely its size. See D23.
+
+**Second correction, found while building step 4: there are six layouts, not four.** The
+original count listed the global, material, composite and depth sets and stopped there.
+`CloudSystem` owns two more of its own, and neither appeared in any step's scope:
+
+| Layout | Bindings | Where |
+|---|---|---|
+| Global | uniform buffer | done, step 4 |
+| Composite | 4 textures + 1 sampler | done, step 4 |
+| Depth | 1 texture, pixel *and* compute | done, step 4 |
+| Material | 3 textures, partially bound | step 5 |
+| **Cloud dispatch** | **storage image + combined image sampler** | **step 11** |
+| **Cloud noise bake** | **storage image** | **step 11** |
+
+Three things follow, and the first is the one that matters.
+
+**`UnorderedAccessTexture` is not optional.** Both cloud layouts bind storage images —
+`RWTexture2D` and `RWTexture3D` in the shaders — and `BindingType` has no value for them. It
+cannot be added when convenient; it is a prerequisite of those sets becoming neutral, which is
+step 11. When it lands the pair reads the way `TextureLayout`'s `ShaderResource` and
+`UnorderedAccess` already do.
+
+**The cloud dispatch set holds a combined image sampler**, which D22 forbids outright. So step
+11 carries a second sampler split, in `clouds.comp.slang`, exactly as step 4 carried the
+composite one.
+
+**The narrowness argument is unaffected, but its arithmetic was wrong.** Six layouts across a
+whole renderer is still narrow, and the ratchet still holds — but a count used as evidence for
+narrowness has to be the real count. The pinned inventory ends at six, not four, and
+`BindGroupLayoutInventoryTests` grows to match at steps 5 and 11 rather than only at step 5.
 
 **What it costs.** `TextureBinding::COUNT` stays 3, so no emissive, occlusion or clearcoat maps
 until either the cap is raised deliberately or step 70 lands. The grill checked what that
@@ -656,13 +685,39 @@ applies to every step here without anything being switched on first.
   only at the resize point that already stalls.
 - **Verify:** baseline unchanged.
 - **Size:** L
+- **Done.** Three things worth knowing.
 
-### 5 — Bind groups: the material set, with the sampler split
+  **D22's sampler split happened here, not at step 5.** The composite layout already held a
+  combined image sampler at binding 3, and `BindingType` has no such value, so the split could
+  not wait: binding 3 became a sampled texture and binding 4 a `Sampler`, and `composite.slang`
+  changed with it. Only the cloud target is sampled — the other three are fetched by texel — so
+  one sampler serves the layout. **Step 5 is correspondingly smaller**: the material set alone.
+
+  **The binding model carries stage visibility per binding**, because the depth group is read by
+  the cloud dispatch as well as by pixel shaders. A graphics-only assumption would not have
+  survived the first layout it met.
+
+  **Two transitional accessors joined `VulkanNative.h`**, both expiring at step 6:
+  `GetDescriptorSet` and `GetDescriptorSetLayout`. Binding a group needs a pipeline layout and
+  creating a pipeline layout needs the raw set layouts, and neither is neutral until D23 makes
+  `PipelineLayoutHandle` real. So the renderer creates its groups through `IDevice` and still
+  binds them itself. **`SetBindGroup` therefore moves to step 6**, against this step's original
+  wording — it cannot exist before the thing it takes as an argument. No allowlist entry moved:
+  every site involved already had one.
+
+  Validation earned its keep twice. It caught the pipeline layouts still naming the deleted
+  raii objects, and then caught a sampled *depth* view being described as
+  `SHADER_READ_ONLY_OPTIMAL` when the barrier had left it in `DEPTH_READ_ONLY_OPTIMAL`. The
+  second is why `VulkanTextureView` now records its aspect: which layout a sampled view wants is
+  a Vulkan rule, not something the neutral description should be made to state.
+
+### 5 — Bind groups: the material set
 
 - **Do:** the material set moves behind the neutral API, and combined image samplers become
   separate texture and sampler bindings (D22) — four shaders (`opaque`, `weightedBlendedOIT`,
   `composite`, `clouds.comp`), `MaterialFactory` and `PBRMaterial`. Both stop writing
-  descriptors directly. The pinned inventory grows to four layouts.
+  descriptors directly. The pinned inventory grows to four layouts, on its way to six — see
+  D14's second correction for the two `CloudSystem` owns.
 - **The partially-bound behaviour must survive the move.** It is what lets an untextured
   material render, and losing it silently would change what the test cubes look like rather
   than failing a build.

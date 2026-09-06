@@ -161,12 +161,14 @@ VulkanDevice::~VulkanDevice()
     // resources through handles is that the count is knowable. Reported rather
     // than asserted so that a shutdown already unwinding from an error is not
     // made worse.
-    const std::array<std::pair<const char*, uint32_t>, 5> live{
+    const std::array<std::pair<const char*, uint32_t>, 7> live{
         std::pair{"buffer", m_Buffers.Size()},
         std::pair{"texture", m_Textures.Size()},
         std::pair{"texture view", m_TextureViews.Size()},
         std::pair{"sampler", m_Samplers.Size()},
         std::pair{"fence", m_Fences.Size()},
+        std::pair{"bind group layout", m_BindGroupLayouts.Size()},
+        std::pair{"bind group", m_BindGroups.Size()},
     };
 
     bool bAnyLive = false;
@@ -185,8 +187,8 @@ VulkanDevice::~VulkanDevice()
     if (!bAnyLive)
     {
         Core::LogMsg(Core::LogSeverity::Info, LogRhi,
-                     "Device destroyed with 0 live buffers, textures, texture views, samplers "
-                     "and fences.");
+                     "Device destroyed with 0 live buffers, textures, texture views, samplers, "
+                     "fences and bind groups.");
     }
 }
 
@@ -381,7 +383,7 @@ TextureViewHandle VulkanDevice::CreateTextureView(const TextureViewDesc& desc)
                                                                   .baseArrayLayer = desc.BaseLayer,
                                                                   .layerCount = desc.LayerCount}};
 
-    VulkanTextureView view{vk::raii::ImageView(m_Device, createInfo)};
+    VulkanTextureView view{vk::raii::ImageView(m_Device, createInfo), aspect};
 
     if (!desc.DebugName.empty())
     {
@@ -535,6 +537,172 @@ vk::Semaphore VulkanDevice::GetSemaphore(SemaphoreHandle handle) const
 {
     const VulkanSemaphore* pSemaphore = m_Semaphores.Get(handle);
     return pSemaphore ? *pSemaphore->Semaphore : vk::Semaphore{};
+}
+
+namespace
+{
+vk::DescriptorType ToVkDescriptorType(BindingType type)
+{
+    switch (type)
+    {
+        case BindingType::UniformBuffer:
+            return vk::DescriptorType::eUniformBuffer;
+        case BindingType::Texture:
+            return vk::DescriptorType::eSampledImage;
+        case BindingType::Sampler:
+            return vk::DescriptorType::eSampler;
+    }
+
+    throw std::runtime_error("Rhi::VulkanDevice: unmapped BindingType.");
+}
+
+vk::ShaderStageFlags ToVkShaderStages(ShaderStage stages)
+{
+    vk::ShaderStageFlags result{};
+    if ((stages & ShaderStage::Vertex) != ShaderStage::None)
+        result |= vk::ShaderStageFlagBits::eVertex;
+    if ((stages & ShaderStage::Pixel) != ShaderStage::None)
+        result |= vk::ShaderStageFlagBits::eFragment;
+    if ((stages & ShaderStage::Compute) != ShaderStage::None)
+        result |= vk::ShaderStageFlagBits::eCompute;
+
+    if (!result)
+        throw std::runtime_error("Rhi::VulkanDevice: a binding visible to no shader stage.");
+
+    return result;
+}
+} // namespace
+
+BindGroupLayoutHandle VulkanDevice::CreateBindGroupLayout(const BindGroupLayoutDesc& desc)
+{
+    std::vector<vk::DescriptorSetLayoutBinding> bindings;
+    bindings.reserve(desc.Bindings.size());
+    for (const BindGroupLayoutBinding& binding : desc.Bindings)
+    {
+        bindings.push_back(
+            vk::DescriptorSetLayoutBinding{.binding = binding.Slot,
+                                           .descriptorType = ToVkDescriptorType(binding.Type),
+                                           .descriptorCount = 1u,
+                                           .stageFlags = ToVkShaderStages(binding.Visibility)});
+    }
+
+    const vk::DescriptorSetLayoutCreateInfo createInfo{
+        .bindingCount = static_cast<uint32_t>(bindings.size()), .pBindings = bindings.data()};
+
+    VulkanBindGroupLayout layout{vk::raii::DescriptorSetLayout(m_Device, createInfo)};
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *layout.Layout, vk::ObjectType::eDescriptorSetLayout,
+                       desc.DebugName.c_str());
+    }
+
+    return m_BindGroupLayouts.Create(std::move(layout));
+}
+
+void VulkanDevice::Destroy(BindGroupLayoutHandle handle)
+{
+    if (m_BindGroupLayouts.Release(handle))
+        return;
+
+    ReportDiagnostic(DiagnosticSeverity::Error,
+                     std::format("Rhi::VulkanDevice::Destroy(BindGroupLayoutHandle): handle "
+                                 "{:#010x} is stale or was never valid.",
+                                 handle.Value));
+}
+
+BindGroupHandle VulkanDevice::CreateBindGroup(const BindGroupDesc& desc)
+{
+    const VulkanBindGroupLayout* pLayout = m_BindGroupLayouts.Get(desc.Layout);
+    if (pLayout == nullptr)
+    {
+        ReportStaleHandle(std::format("Rhi::VulkanDevice::CreateBindGroup: layout {:#010x} is "
+                                      "stale or was never valid.",
+                                      desc.Layout.Value));
+        return BindGroupHandle{};
+    }
+
+    VulkanBindGroup group{m_BindGroupAllocator->Allocate(*pLayout->Layout)};
+
+    // Written once, here, and never again: a group is immutable (plan D20), so
+    // this is the only point at which its descriptors are filled in.
+    std::vector<vk::DescriptorBufferInfo> bufferInfos(desc.Bindings.size());
+    std::vector<vk::DescriptorImageInfo> imageInfos(desc.Bindings.size());
+    std::vector<vk::WriteDescriptorSet> writes;
+    writes.reserve(desc.Bindings.size());
+
+    for (size_t i = 0; i < desc.Bindings.size(); i++)
+    {
+        const BindGroupBinding& binding = desc.Bindings[i];
+        vk::WriteDescriptorSet write{.dstSet = *group.Set,
+                                     .dstBinding = binding.Slot,
+                                     .dstArrayElement = 0u,
+                                     .descriptorCount = 1u,
+                                     .descriptorType = ToVkDescriptorType(binding.Type)};
+
+        switch (binding.Type)
+        {
+            case BindingType::UniformBuffer:
+                bufferInfos[i] = vk::DescriptorBufferInfo{
+                    .buffer = GetBuffer(binding.Buffer), .offset = 0u, .range = VK_WHOLE_SIZE};
+                write.pBufferInfo = &bufferInfos[i];
+                break;
+            case BindingType::Texture:
+            {
+                // A sampled depth view reads from DEPTH_READ_ONLY_OPTIMAL, not
+                // from SHADER_READ_ONLY_OPTIMAL. Which one is a Vulkan layout
+                // rule rather than anything the caller said, so it comes from
+                // the view's aspect.
+                const VulkanTextureView* pView = m_TextureViews.Get(binding.View);
+                const bool bDepth = pView != nullptr && Any(pView->Aspect & TextureAspect::Depth);
+                imageInfos[i] = vk::DescriptorImageInfo{
+                    .imageView = GetImageView(binding.View),
+                    .imageLayout = bDepth ? vk::ImageLayout::eDepthReadOnlyOptimal
+                                          : vk::ImageLayout::eShaderReadOnlyOptimal};
+                write.pImageInfo = &imageInfos[i];
+                break;
+            }
+            case BindingType::Sampler:
+                imageInfos[i] = vk::DescriptorImageInfo{.sampler = GetSampler(binding.Sampler)};
+                write.pImageInfo = &imageInfos[i];
+                break;
+        }
+
+        writes.push_back(write);
+    }
+
+    m_Device.updateDescriptorSets(writes, nullptr);
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *group.Set, vk::ObjectType::eDescriptorSet,
+                       desc.DebugName.c_str());
+    }
+
+    return m_BindGroups.Create(std::move(group));
+}
+
+void VulkanDevice::Destroy(BindGroupHandle handle)
+{
+    if (m_BindGroups.Release(handle))
+        return;
+
+    ReportDiagnostic(DiagnosticSeverity::Error,
+                     std::format("Rhi::VulkanDevice::Destroy(BindGroupHandle): handle {:#010x} is "
+                                 "stale or was never valid.",
+                                 handle.Value));
+}
+
+vk::DescriptorSetLayout VulkanDevice::GetDescriptorSetLayout(BindGroupLayoutHandle handle) const
+{
+    const VulkanBindGroupLayout* pLayout = m_BindGroupLayouts.Get(handle);
+    return pLayout ? *pLayout->Layout : vk::DescriptorSetLayout{};
+}
+
+vk::DescriptorSet VulkanDevice::GetDescriptorSet(BindGroupHandle handle) const
+{
+    const VulkanBindGroup* pGroup = m_BindGroups.Get(handle);
+    return pGroup ? *pGroup->Set : vk::DescriptorSet{};
 }
 
 FenceHandle VulkanDevice::CreateFence(const FenceDesc& desc)
@@ -1176,6 +1344,16 @@ void VulkanDevice::CreateLogicalDevice(const DeviceRequirements& requirements)
         m_CopyQueue = vk::raii::Queue(m_Device, m_QueueFamilies.Copy, 0);
         SetVkDebugName(m_Device, *m_CopyQueue, vk::ObjectType::eQueue, "Copy Queue");
     }
+
+    // Sized per set rather than per pool, and it grows: bind groups are created
+    // at startup and rebuilt on resize, so the count is small but not a number
+    // this layer should be asserting a ceiling on.
+    static constexpr std::array kBindGroupSizes{
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 1u},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 4u},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1u}};
+    m_BindGroupAllocator =
+        std::make_unique<DescriptorAllocator>(m_Device, kBindGroupSizes, 16u, "Bind Groups");
 
     // Setting debug names for objects which were created before the device was
     // created.

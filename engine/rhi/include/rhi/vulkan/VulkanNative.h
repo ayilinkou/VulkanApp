@@ -83,6 +83,24 @@ vk::ImageView GetImageView(IDevice& device, TextureViewHandle handle);
 vk::Sampler GetSampler(IDevice& device, SamplerHandle handle);
 
 /**
+ * The descriptor set a bind group names, or a null set if the handle is stale.
+ *
+ * Transitional, and narrower than it looks. Binding a group needs a pipeline
+ * layout, which is not neutral until pipelines are (plan D23) -- so the renderer
+ * creates its groups through IDevice and still binds them with
+ * vkCmdBindDescriptorSets against a VkPipelineLayout it owns. This goes with
+ * that call, when SetBindGroup lands alongside PipelineLayoutHandle.
+ */
+vk::DescriptorSet GetDescriptorSet(IDevice& device, BindGroupHandle handle);
+
+/**
+ * The layout a bind group layout handle names. Transitional for the same reason
+ * and with the same expiry: pipeline layout creation is Vulkan-side until D23
+ * makes PipelineLayoutHandle neutral.
+ */
+vk::DescriptorSetLayout GetDescriptorSetLayout(IDevice& device, BindGroupLayoutHandle handle);
+
+/**
  * The semaphore a handle names, or a null vk::Semaphore if the handle is stale.
  *
  * Only IPresentTarget produces a SemaphoreHandle, and this is how the caller

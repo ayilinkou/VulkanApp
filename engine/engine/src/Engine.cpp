@@ -11,6 +11,7 @@
 #include <span>
 
 #include "AssetRegistry.h"
+#include "BindGroupLayouts.h"
 #include "Camera.h"
 #include "CloudSystem.h"
 #include "Common.h"
@@ -503,7 +504,7 @@ private:
                                    .FramesInFlight = m_Config.FramesInFlight});
 
         CreateDepthResources();
-        CreateDescriptorSetLayouts();
+        CreateBindGroupLayouts();
         CreateCommandPools();
         CreateTextureSampler();
 
@@ -532,28 +533,29 @@ private:
         CreateGlobalBuffers();
         CreateInstanceBuffers(m_Config.InitialInstanceCapacity);
         CreateRenderTargets();
-        CreateDescriptorPool();
 
         // TODO: read from scene
-        CloudSystemCreateInfo cloudCreateInfo{.RhiDevice = *m_RhiDevice,
-                                              .PipelineCache = *m_PipelineCache,
-                                              .ContentPaths = m_Paths,
-                                              .GlobalSetLayout = m_GlobalBufferSetLayout,
-                                              .DepthSetLayout = m_DepthSetLayout,
-                                              .CommandPool = m_GenericCommandPool,
-                                              // The device reports whether an async compute
-                                              // queue exists (DeviceCaps::
-                                              // bHasDedicatedComputeQueue); moving the cloud
-                                              // dispatches onto it needs them to own their own
-                                              // submission and cross-queue synchronization
-                                              // first, so they share the graphics queue.
-                                              .ComputeQueue = m_GraphicsQueue,
-                                              .SwapchainWidth = SwapchainExtent().width,
-                                              .SwapchainHeight = SwapchainExtent().height,
-                                              .FramesInFlight = m_Config.FramesInFlight};
+        CloudSystemCreateInfo cloudCreateInfo{
+            .RhiDevice = *m_RhiDevice,
+            .PipelineCache = *m_PipelineCache,
+            .ContentPaths = m_Paths,
+            .GlobalSetLayout = NativeSetLayout(m_GlobalLayout.Get()),
+            .DepthSetLayout = NativeSetLayout(m_DepthLayout.Get()),
+            .CommandPool = m_GenericCommandPool,
+            // The device reports whether an async compute
+            // queue exists (DeviceCaps::
+            // bHasDedicatedComputeQueue); moving the cloud
+            // dispatches onto it needs them to own their own
+            // submission and cross-queue synchronization
+            // first, so they share the graphics queue.
+            .ComputeQueue = m_GraphicsQueue,
+            .SwapchainWidth = SwapchainExtent().width,
+            .SwapchainHeight = SwapchainExtent().height,
+            .FramesInFlight = m_Config.FramesInFlight};
         m_CloudSystem = std::make_unique<CloudSystem>(cloudCreateInfo);
 
-        CreateDescriptorSets();
+        CreateGlobalBindGroups();
+        RecreateFrameBindGroups();
         CreateSyncObjects();
         CreateQuadBuffers();
     }
@@ -1074,7 +1076,7 @@ private:
             .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
 
-        std::array setLayouts{*m_GlobalBufferSetLayout,
+        std::array setLayouts{NativeSetLayout(m_GlobalLayout.Get()),
                               m_MaterialFactory->GetDescriptorSetLayout()};
 
         vk::PushConstantRange pushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eFragment,
@@ -1134,7 +1136,7 @@ private:
               .colorWriteMask = vk::ColorComponentFlagBits::eR}}};
 
         std::array<vk::DescriptorSetLayout, 2> setLayouts = {
-            m_GlobalBufferSetLayout, m_MaterialFactory->GetDescriptorSetLayout()};
+            NativeSetLayout(m_GlobalLayout.Get()), m_MaterialFactory->GetDescriptorSetLayout()};
 
         vk::PushConstantRange pushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eFragment,
                                                 .size = sizeof(PBRMaterial::MaterialData)};
@@ -1166,8 +1168,8 @@ private:
             .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
 
-        std::array<vk::DescriptorSetLayout, 2> setLayouts = {m_GlobalBufferSetLayout,
-                                                             m_CompositeSetLayout};
+        std::array<vk::DescriptorSetLayout, 2> setLayouts = {
+            NativeSetLayout(m_GlobalLayout.Get()), NativeSetLayout(m_CompositeLayout.Get())};
 
         auto [compositeLayout, compositePipeline] =
             PipelineBuilder(m_Device)
@@ -1255,6 +1257,18 @@ private:
         return *recorder.List;
     }
 
+    /** The layout a bind group layout names, for the transitional pipeline path. */
+    vk::DescriptorSetLayout NativeSetLayout(Rhi::BindGroupLayoutHandle handle)
+    {
+        return Rhi::Vulkan::GetDescriptorSetLayout(*m_RhiDevice, handle);
+    }
+
+    /** The descriptor set a bind group names, for the transitional bind path. */
+    vk::DescriptorSet NativeSet(Rhi::BindGroupHandle handle)
+    {
+        return Rhi::Vulkan::GetDescriptorSet(*m_RhiDevice, handle);
+    }
+
     /** The whole render target, which is the only area any pass draws to. */
     Rhi::Rect2D WholeTarget() const
     {
@@ -1337,7 +1351,7 @@ private:
         list->SetViewport(FullViewport());
         list->SetScissor(WholeTarget());
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_OpaquePipelineLayout, 0,
-                               *frame.GlobalBufferDescriptorSet, nullptr);
+                               NativeSet(frame.GlobalBindGroup.Get()), nullptr);
 
         cmd.bindVertexBuffers(1, Rhi::Vulkan::GetBuffer(*m_RhiDevice, frame.InstanceBuffer.Get()),
                               {0});
@@ -1384,7 +1398,8 @@ private:
         Rhi::ICommandList& list = BeginRecording(frame.CloudCommands);
 
         m_MainThreadBarrierCounts += m_CloudSystem->RecordDispatch(
-            list, m_FrameIndex, frame.GlobalBufferDescriptorSet, frame.DepthBufferDescriptorSet);
+            list, m_FrameIndex, NativeSet(frame.GlobalBindGroup.Get()),
+            NativeSet(frame.DepthBindGroup.Get()));
 
         list.End();
     }
@@ -1422,7 +1437,7 @@ private:
         list->SetViewport(FullViewport());
         list->SetScissor(WholeTarget());
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_TransparentPipelineLayout, 0,
-                               *frame.GlobalBufferDescriptorSet, nullptr);
+                               NativeSet(frame.GlobalBindGroup.Get()), nullptr);
 
         cmd.bindVertexBuffers(1, Rhi::Vulkan::GetBuffer(*m_RhiDevice, frame.InstanceBuffer.Get()),
                               {0});
@@ -1476,8 +1491,8 @@ private:
         list->SetViewport(FullViewport());
         list->SetScissor(WholeTarget());
 
-        std::array descriptorSets = {*frame.GlobalBufferDescriptorSet,
-                                     *frame.CompositeDescriptorSet};
+        std::array descriptorSets = {NativeSet(frame.GlobalBindGroup.Get()),
+                                     NativeSet(frame.CompositeBindGroup.Get())};
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_CompositePipelineLayout, 0u,
                                descriptorSets, nullptr);
 
@@ -1623,8 +1638,7 @@ private:
         CreateRenderTargets();
 
         m_CloudSystem->Resize(SwapchainExtent().width, SwapchainExtent().height);
-        UpdateDepthDescriptorSets();
-        UpdateCompositeDescriptorSet();
+        RecreateFrameBindGroups();
 
         m_Camera->SetProjection(m_Camera->GetFOV(),
                                 static_cast<float>(SwapchainExtent().width) /
@@ -1648,47 +1662,100 @@ private:
         m_pUiBackend->OnTargetRecreated(imageCount, m_PresentTarget->GetFormat());
     }
 
-    void CreateDescriptorSetLayouts()
+    void CreateBindGroupLayouts()
     {
-        LogMsg(LogSeverity::Info, LogRenderer, "CreateDescriptorSetLayouts()");
+        LogMsg(LogSeverity::Info, LogRenderer, "CreateBindGroupLayouts()");
 
-        std::array frameBindings = {vk::DescriptorSetLayoutBinding(
-            0u, vk::DescriptorType::eUniformBuffer, 1u,
-            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment |
-                vk::ShaderStageFlagBits::eCompute,
-            nullptr)};
-        vk::DescriptorSetLayoutCreateInfo frameCreateInfo{
-            .bindingCount = static_cast<uint32_t>(frameBindings.size()),
-            .pBindings = frameBindings.data()};
-        m_GlobalBufferSetLayout = vk::raii::DescriptorSetLayout(m_Device, frameCreateInfo);
-        SetVkDebugName(m_Device, *m_GlobalBufferSetLayout, vk::ObjectType::eDescriptorSetLayout,
-                       "Frame Uniform Buffer Descriptor Set Layout");
+        const auto make =
+            [&](std::span<const Rhi::BindGroupLayoutBinding> bindings, const char* name)
+        {
+            return Rhi::UniqueHandle<Rhi::BindGroupLayoutHandle>(
+                *m_RhiDevice, m_RhiDevice->CreateBindGroupLayout(Rhi::BindGroupLayoutDesc{
+                                  .Bindings = bindings, .DebugName = name}));
+        };
 
-        std::array compositeBindings = {
-            vk::DescriptorSetLayoutBinding(0u, vk::DescriptorType::eSampledImage, 1u,
-                                           vk::ShaderStageFlagBits::eFragment, nullptr),
-            vk::DescriptorSetLayoutBinding(1u, vk::DescriptorType::eSampledImage, 1u,
-                                           vk::ShaderStageFlagBits::eFragment, nullptr),
-            vk::DescriptorSetLayoutBinding(2u, vk::DescriptorType::eSampledImage, 1u,
-                                           vk::ShaderStageFlagBits::eFragment, nullptr),
-            vk::DescriptorSetLayoutBinding(3u, vk::DescriptorType::eCombinedImageSampler, 1u,
-                                           vk::ShaderStageFlagBits::eFragment, nullptr)};
-        vk::DescriptorSetLayoutCreateInfo compositeCreateInfo{
-            .bindingCount = static_cast<uint32_t>(compositeBindings.size()),
-            .pBindings = compositeBindings.data()};
-        m_CompositeSetLayout = vk::raii::DescriptorSetLayout(m_Device, compositeCreateInfo);
-        SetVkDebugName(m_Device, *m_CompositeSetLayout, vk::ObjectType::eDescriptorSetLayout,
-                       "Composite Descriptor Set Layout");
+        m_GlobalLayout = make(EngineBindGroups::kGlobal, "Global Layout");
+        m_CompositeLayout = make(EngineBindGroups::kComposite, "Composite Layout");
+        m_DepthLayout = make(EngineBindGroups::kDepth, "Depth Layout");
+    }
 
-        std::array depthBindings = {vk::DescriptorSetLayoutBinding(
-            0u, vk::DescriptorType::eSampledImage, 1u,
-            vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eCompute, nullptr)};
-        vk::DescriptorSetLayoutCreateInfo depthCreateInfo{
-            .bindingCount = static_cast<uint32_t>(depthBindings.size()),
-            .pBindings = depthBindings.data()};
-        m_DepthSetLayout = vk::raii::DescriptorSetLayout(m_Device, depthCreateInfo);
-        SetVkDebugName(m_Device, *m_DepthSetLayout, vk::ObjectType::eDescriptorSetLayout,
-                       "Depth Descriptor Set Layout");
+    /**
+     * The global group never changes: the buffer it names is created once per
+     * frame in flight and only its contents are rewritten. So it is built here
+     * and never rebuilt, unlike the two below.
+     */
+    void CreateGlobalBindGroups()
+    {
+        LogMsg(LogSeverity::Info, LogRenderer, "CreateGlobalBindGroups()");
+
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
+        {
+            FrameData& frame = m_Frames[i];
+            const std::array bindings{Rhi::BindGroupBinding{.Slot = 0u,
+                                                            .Type = Rhi::BindingType::UniformBuffer,
+                                                            .Buffer = frame.GlobalBuffer.Get()}};
+
+            frame.GlobalBindGroup = Rhi::UniqueHandle<Rhi::BindGroupHandle>(
+                *m_RhiDevice, m_RhiDevice->CreateBindGroup(Rhi::BindGroupDesc{
+                                  .Layout = m_GlobalLayout.Get(),
+                                  .Bindings = bindings,
+                                  .DebugName = std::format("Global Bind Group Frame {}", i)}));
+        }
+    }
+
+    /**
+     * Rebuilds the two groups whose contents are render targets, which change
+     * whenever those targets are recreated.
+     *
+     * Recreated rather than rewritten, because a bind group is immutable (RHI
+     * plan D20). That is safe here for the reason it is safe anywhere in this
+     * renderer: the only caller besides startup is the resize path, which has
+     * already waited for the device to go idle, so nothing in flight still names
+     * the groups being replaced.
+     */
+    void RecreateFrameBindGroups()
+    {
+        LogMsg(LogSeverity::Info, LogRenderer, "RecreateFrameBindGroups()");
+
+        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
+        {
+            FrameData& frame = m_Frames[i];
+
+            const std::array compositeBindings{
+                Rhi::BindGroupBinding{.Slot = 0u,
+                                      .Type = Rhi::BindingType::Texture,
+                                      .View = frame.OpaqueTexture.GetView()},
+                Rhi::BindGroupBinding{.Slot = 1u,
+                                      .Type = Rhi::BindingType::Texture,
+                                      .View = frame.AccumTexture.GetView()},
+                Rhi::BindGroupBinding{.Slot = 2u,
+                                      .Type = Rhi::BindingType::Texture,
+                                      .View = frame.RevealageTexture.GetView()},
+                Rhi::BindGroupBinding{.Slot = 3u,
+                                      .Type = Rhi::BindingType::Texture,
+                                      .View =
+                                          m_CloudSystem->GetOutputView(static_cast<uint8_t>(i))},
+                Rhi::BindGroupBinding{.Slot = 4u,
+                                      .Type = Rhi::BindingType::Sampler,
+                                      .Sampler = m_TextureSampler.Get()}};
+
+            frame.CompositeBindGroup = Rhi::UniqueHandle<Rhi::BindGroupHandle>(
+                *m_RhiDevice, m_RhiDevice->CreateBindGroup(Rhi::BindGroupDesc{
+                                  .Layout = m_CompositeLayout.Get(),
+                                  .Bindings = compositeBindings,
+                                  .DebugName = std::format("Composite Bind Group Frame {}", i)}));
+
+            const std::array depthBindings{
+                Rhi::BindGroupBinding{.Slot = 0u,
+                                      .Type = Rhi::BindingType::Texture,
+                                      .View = frame.DepthTexture.GetView()}};
+
+            frame.DepthBindGroup = Rhi::UniqueHandle<Rhi::BindGroupHandle>(
+                *m_RhiDevice, m_RhiDevice->CreateBindGroup(Rhi::BindGroupDesc{
+                                  .Layout = m_DepthLayout.Get(),
+                                  .Bindings = depthBindings,
+                                  .DebugName = std::format("Depth Bind Group Frame {}", i)}));
+        }
     }
 
     void CreateGlobalBuffers()
@@ -1769,121 +1836,6 @@ private:
 
         memcpy(m_RhiDevice->GetMappedData(m_Frames[frameIndex].GlobalBuffer.Get()), &m_GlobalBuffer,
                sizeof(m_GlobalBuffer));
-    }
-
-    void CreateDescriptorPool()
-    {
-        LogMsg(LogSeverity::Info, LogRenderer, "CreateDescriptorPool()");
-
-        std::array framePoolSize = {
-            vk::DescriptorPoolSize{.type = vk::DescriptorType::eUniformBuffer,
-                                   .descriptorCount = m_Config.FramesInFlight}};
-        vk::DescriptorPoolCreateInfo frameCreateInfo{
-            .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-            .maxSets = m_Config.FramesInFlight,
-            .poolSizeCount = static_cast<uint32_t>(framePoolSize.size()),
-            .pPoolSizes = framePoolSize.data()};
-
-        m_FrameDescriptorPool = vk::raii::DescriptorPool(m_Device, frameCreateInfo);
-        SetVkDebugName(m_Device, *m_FrameDescriptorPool, vk::ObjectType::eDescriptorPool,
-                       "Frame Descriptor Pool");
-
-        std::array compositePoolSize = {
-            vk::DescriptorPoolSize{.type = vk::DescriptorType::eSampledImage,
-                                   .descriptorCount = m_Config.FramesInFlight * 3},
-            vk::DescriptorPoolSize{.type = vk::DescriptorType::eCombinedImageSampler,
-                                   .descriptorCount = m_Config.FramesInFlight * 1}};
-        vk::DescriptorPoolCreateInfo compCreateInfo{
-            .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-            .maxSets = m_Config.FramesInFlight,
-            .poolSizeCount = static_cast<uint32_t>(compositePoolSize.size()),
-            .pPoolSizes = compositePoolSize.data()};
-
-        m_CompositeDescriptorPool = vk::raii::DescriptorPool(m_Device, compCreateInfo);
-        SetVkDebugName(m_Device, *m_CompositeDescriptorPool, vk::ObjectType::eDescriptorPool,
-                       "Composite Descriptor Pool");
-
-        std::array genericPoolSize = {vk::DescriptorPoolSize{
-            .type = vk::DescriptorType::eSampledImage, .descriptorCount = m_Config.FramesInFlight}};
-        vk::DescriptorPoolCreateInfo genericCreateInfo{
-            .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-            .maxSets = m_Config.FramesInFlight,
-            .poolSizeCount = static_cast<uint32_t>(genericPoolSize.size()),
-            .pPoolSizes = genericPoolSize.data()};
-
-        m_GenericDescriptorPool = vk::raii::DescriptorPool(m_Device, genericCreateInfo);
-        SetVkDebugName(m_Device, *m_GenericDescriptorPool, vk::ObjectType::eDescriptorPool,
-                       "Generic Descriptor Pool");
-    }
-
-    void CreateDescriptorSets()
-    {
-        LogMsg(LogSeverity::Info, LogRenderer, "CreateDescriptorSets()");
-
-        std::vector<vk::DescriptorSetLayout> globalBufferLayouts(m_Config.FramesInFlight,
-                                                                 *m_GlobalBufferSetLayout);
-        vk::DescriptorSetAllocateInfo globalBufferAllocInfo{
-            .descriptorPool = *m_FrameDescriptorPool,
-            .descriptorSetCount = static_cast<uint32_t>(globalBufferLayouts.size()),
-            .pSetLayouts = globalBufferLayouts.data()};
-        std::vector<vk::raii::DescriptorSet> uniformDescriptorSets =
-            m_Device.allocateDescriptorSets(globalBufferAllocInfo);
-
-        std::vector<vk::DescriptorSetLayout> compSetLayouts(m_Config.FramesInFlight,
-                                                            *m_CompositeSetLayout);
-        vk::DescriptorSetAllocateInfo compAllocInfo{
-            .descriptorPool = m_CompositeDescriptorPool,
-            .descriptorSetCount = static_cast<uint32_t>(compSetLayouts.size()),
-            .pSetLayouts = compSetLayouts.data()};
-        std::vector<vk::raii::DescriptorSet> compositeDescriptorSets =
-            m_Device.allocateDescriptorSets(compAllocInfo);
-
-        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
-        {
-            FrameData& frame = m_Frames[i];
-
-            frame.GlobalBufferDescriptorSet = std::move(uniformDescriptorSets[i]);
-            SetVkDebugName(m_Device, *frame.GlobalBufferDescriptorSet,
-                           vk::ObjectType::eDescriptorSet,
-                           std::format("Main Descriptor Set Frame {}", i).c_str());
-
-            vk::DescriptorBufferInfo bufferInfo{
-                .buffer = Rhi::Vulkan::GetBuffer(*m_RhiDevice, frame.GlobalBuffer.Get()),
-                .offset = 0,
-                .range = sizeof(GlobalBuffer)};
-
-            std::array globalDescriptorWrites = {
-                vk::WriteDescriptorSet{.dstSet = frame.GlobalBufferDescriptorSet,
-                                       .dstBinding = 0,
-                                       .dstArrayElement = 0,
-                                       .descriptorCount = 1,
-                                       .descriptorType = vk::DescriptorType::eUniformBuffer,
-                                       .pBufferInfo = &bufferInfo}};
-
-            m_Device.updateDescriptorSets(globalDescriptorWrites, {});
-
-            frame.CompositeDescriptorSet = std::move(compositeDescriptorSets[i]);
-            SetVkDebugName(m_Device, *frame.CompositeDescriptorSet, vk::ObjectType::eDescriptorSet,
-                           std::format("Composite Descriptor Set Frame {}", i).c_str());
-        }
-
-        UpdateCompositeDescriptorSet();
-
-        std::vector<vk::DescriptorSetLayout> depthBufferSetLayouts(1, *m_DepthSetLayout);
-        vk::DescriptorSetAllocateInfo depthAllocInfo{
-            .descriptorPool = m_GenericDescriptorPool,
-            .descriptorSetCount = static_cast<uint32_t>(depthBufferSetLayouts.size()),
-            .pSetLayouts = depthBufferSetLayouts.data()};
-
-        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
-        {
-            m_Frames[i].DepthBufferDescriptorSet =
-                std::move(m_Device.allocateDescriptorSets(depthAllocInfo).front());
-            SetVkDebugName(m_Device, *m_Frames[i].DepthBufferDescriptorSet,
-                           vk::ObjectType::eDescriptorSet, "Depth Buffer Descriptor Set");
-        }
-
-        UpdateDepthDescriptorSets();
     }
 
     void CreateTextureSampler()
@@ -2070,79 +2022,6 @@ private:
         m_UploadContext->Flush();
     }
 
-    void UpdateCompositeDescriptorSet()
-    {
-        LogMsg(LogSeverity::Info, LogRenderer, "UpdateCompositeDescriptorSet()");
-
-        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
-        {
-            FrameData& frame = m_Frames[i];
-            vk::DescriptorImageInfo opaqueImageInfo{
-                .imageView = NativeView(frame.OpaqueTexture.GetView()),
-                .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-            vk::DescriptorImageInfo accumImageInfo{
-                .imageView = NativeView(frame.AccumTexture.GetView()),
-                .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-            vk::DescriptorImageInfo revealageImageInfo{
-                .imageView = NativeView(frame.RevealageTexture.GetView()),
-                .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-            vk::DescriptorImageInfo cloudsImageInfo{
-                .sampler = Rhi::Vulkan::GetSampler(*m_RhiDevice, m_TextureSampler.Get()),
-                .imageView = NativeView(m_CloudSystem->GetOutputView(static_cast<uint8_t>(i))),
-                .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-
-            std::array compDescriptorWrites = {
-                vk::WriteDescriptorSet{.dstSet = frame.CompositeDescriptorSet,
-                                       .dstBinding = 0u,
-                                       .dstArrayElement = 0u,
-                                       .descriptorCount = 1u,
-                                       .descriptorType = vk::DescriptorType::eSampledImage,
-                                       .pImageInfo = &opaqueImageInfo},
-                vk::WriteDescriptorSet{.dstSet = frame.CompositeDescriptorSet,
-                                       .dstBinding = 1u,
-                                       .dstArrayElement = 0u,
-                                       .descriptorCount = 1u,
-                                       .descriptorType = vk::DescriptorType::eSampledImage,
-                                       .pImageInfo = &accumImageInfo},
-                vk::WriteDescriptorSet{.dstSet = frame.CompositeDescriptorSet,
-                                       .dstBinding = 2u,
-                                       .dstArrayElement = 0u,
-                                       .descriptorCount = 1u,
-                                       .descriptorType = vk::DescriptorType::eSampledImage,
-                                       .pImageInfo = &revealageImageInfo},
-                vk::WriteDescriptorSet{.dstSet = frame.CompositeDescriptorSet,
-                                       .dstBinding = 3u,
-                                       .dstArrayElement = 0u,
-                                       .descriptorCount = 1u,
-                                       .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-                                       .pImageInfo = &cloudsImageInfo}};
-
-            m_Device.updateDescriptorSets(compDescriptorWrites, {});
-        }
-    }
-
-    void UpdateDepthDescriptorSets()
-    {
-        LogMsg(LogSeverity::Info, LogRenderer, "UpdateDepthDescriptorSets()");
-
-        for (size_t i = 0; i < m_Config.FramesInFlight; i++)
-        {
-            vk::DescriptorImageInfo imageInfo{
-                .imageView = NativeView(m_Frames[i].DepthTexture.GetView()),
-                .imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal};
-
-            std::array depthDescriptorWrites = {
-                vk::WriteDescriptorSet{.dstSet = m_Frames[i].DepthBufferDescriptorSet,
-                                       .dstBinding = 0,
-                                       .dstArrayElement = 0,
-                                       .descriptorCount = 1,
-                                       .descriptorType = vk::DescriptorType::eSampledImage,
-                                       .pImageInfo = &imageInfo}};
-
-            m_Device.updateDescriptorSets(depthDescriptorWrites, {});
-        }
-    }
-
 private:
     /**
      * Declared first because the device's creation reads them, and members are
@@ -2215,18 +2094,15 @@ private:
     vk::raii::PipelineLayout m_OpaquePipelineLayout = nullptr;
     vk::raii::PipelineLayout m_TransparentPipelineLayout = nullptr;
     vk::raii::PipelineLayout m_CompositePipelineLayout = nullptr;
-    vk::raii::DescriptorSetLayout m_GlobalBufferSetLayout = nullptr;
-    vk::raii::DescriptorSetLayout m_CompositeSetLayout = nullptr;
-    vk::raii::DescriptorSetLayout m_DepthSetLayout = nullptr;
     vk::raii::Pipeline m_OpaquePipeline = nullptr;
     vk::raii::Pipeline m_TransparentPipeline = nullptr;
     vk::raii::Pipeline m_CompositePipeline = nullptr;
     vk::raii::CommandPool m_GenericCommandPool = nullptr;
     GlobalBuffer m_GlobalBuffer = {};
     Rhi::UniqueHandle<Rhi::SamplerHandle> m_TextureSampler;
-    vk::raii::DescriptorPool m_FrameDescriptorPool = nullptr;
-    vk::raii::DescriptorPool m_CompositeDescriptorPool = nullptr;
-    vk::raii::DescriptorPool m_GenericDescriptorPool = nullptr;
+    Rhi::UniqueHandle<Rhi::BindGroupLayoutHandle> m_GlobalLayout;
+    Rhi::UniqueHandle<Rhi::BindGroupLayoutHandle> m_CompositeLayout;
+    Rhi::UniqueHandle<Rhi::BindGroupLayoutHandle> m_DepthLayout;
     Rhi::Format m_DepthFormat = Rhi::Format::Undefined;
     static constexpr Rhi::Format m_OpaqueImageFormat = Rhi::Format::RGBA16Float;
     static constexpr Rhi::Format m_AccumImageFormat = Rhi::Format::RGBA16Float;

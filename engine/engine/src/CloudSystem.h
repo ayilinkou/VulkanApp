@@ -22,8 +22,8 @@ struct CloudSystemCreateInfo
     Hikari::Rhi::IDevice& RhiDevice;
     Hikari::Rhi::IPipelineCache& PipelineCache;
     const Hikari::Platform::Paths& ContentPaths;
-    vk::raii::DescriptorSetLayout& GlobalSetLayout;
-    vk::raii::DescriptorSetLayout& DepthSetLayout;
+    vk::DescriptorSetLayout GlobalSetLayout;
+    vk::DescriptorSetLayout DepthSetLayout;
     vk::raii::CommandPool& CommandPool;
     vk::raii::Queue& ComputeQueue;
     uint32_t SwapchainWidth;
@@ -60,8 +60,8 @@ public:
      * frame's totals.
      */
     Hikari::Rhi::BarrierCounts RecordDispatch(Hikari::Rhi::ICommandList& list, uint32_t frameIndex,
-                                              vk::raii::DescriptorSet& globalSet,
-                                              vk::raii::DescriptorSet& depthSet);
+                                              vk::DescriptorSet globalSet,
+                                              vk::DescriptorSet depthSet);
     void Resize(uint32_t width, uint32_t height);
 
     Hikari::Rhi::TextureViewHandle GetOutputView(uint8_t frameIndex) const
@@ -78,8 +78,8 @@ private:
     void CreateBakeDescriptorSetLayout();
     void CreatePipeline(const Hikari::Platform::Paths& paths,
                         Hikari::Rhi::IPipelineCache& pipelineCache,
-                        vk::raii::DescriptorSetLayout& globalSetLayout,
-                        vk::raii::DescriptorSetLayout& depthSetLayout);
+                        vk::DescriptorSetLayout globalSetLayout,
+                        vk::DescriptorSetLayout depthSetLayout);
     void CreateBakePipeline(const Hikari::Platform::Paths& paths,
                             Hikari::Rhi::IPipelineCache& pipelineCache);
     void CreateDescriptorPool();

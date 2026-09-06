@@ -26,6 +26,9 @@
 #include "vulkan/QueueFamilies.h"
 #include "vulkan/VulkanAllocator.h"
 #include "vulkan/VulkanBuffer.h"
+#include <rhi/vulkan/DescriptorAllocator.h>
+
+#include "vulkan/VulkanBindGroup.h"
 #include "vulkan/VulkanFence.h"
 #include "vulkan/VulkanSampler.h"
 #include "vulkan/VulkanSemaphore.h"
@@ -65,6 +68,17 @@ public:
 
     [[nodiscard]] std::unique_ptr<ICommandAllocator>
     CreateCommandAllocator(const CommandAllocatorDesc& desc) override;
+
+    BindGroupLayoutHandle CreateBindGroupLayout(const BindGroupLayoutDesc& desc) override;
+    void Destroy(BindGroupLayoutHandle handle) override;
+    BindGroupHandle CreateBindGroup(const BindGroupDesc& desc) override;
+    void Destroy(BindGroupHandle handle) override;
+    uint32_t GetLiveBindGroupLayoutCount() const override { return m_BindGroupLayouts.Size(); }
+    uint32_t GetLiveBindGroupCount() const override { return m_BindGroups.Size(); }
+
+    /** The set a handle names, for the transitional binding path. */
+    vk::DescriptorSet GetDescriptorSet(BindGroupHandle handle) const;
+    vk::DescriptorSetLayout GetDescriptorSetLayout(BindGroupLayoutHandle handle) const;
 
     FenceHandle CreateFence(const FenceDesc& desc) override;
     void Destroy(FenceHandle handle) override;
@@ -275,6 +289,14 @@ private:
      */
     Core::HandlePool<VulkanSemaphore, SemaphoreTag> m_Semaphores;
     Core::HandlePool<VulkanFence, FenceTag> m_Fences;
+    Core::HandlePool<VulkanBindGroupLayout, BindGroupLayoutTag> m_BindGroupLayouts;
+
+    /**
+     * Declared after the allocator that owns the pools their sets came from, so
+     * the sets are freed before the pools they name are destroyed.
+     */
+    std::unique_ptr<DescriptorAllocator> m_BindGroupAllocator;
+    Core::HandlePool<VulkanBindGroup, BindGroupTag> m_BindGroups;
 
     QueueFamilies m_QueueFamilies;
 

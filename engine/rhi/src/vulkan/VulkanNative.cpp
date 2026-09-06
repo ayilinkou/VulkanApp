@@ -73,6 +73,16 @@ vk::Sampler GetSampler(IDevice& device, SamplerHandle handle)
     return AsVulkan(device).GetSampler(handle);
 }
 
+vk::DescriptorSetLayout GetDescriptorSetLayout(IDevice& device, BindGroupLayoutHandle handle)
+{
+    return static_cast<VulkanDevice&>(device).GetDescriptorSetLayout(handle);
+}
+
+vk::DescriptorSet GetDescriptorSet(IDevice& device, BindGroupHandle handle)
+{
+    return static_cast<VulkanDevice&>(device).GetDescriptorSet(handle);
+}
+
 vk::Semaphore GetSemaphore(IDevice& device, SemaphoreHandle handle)
 {
     return AsVulkan(device).GetSemaphore(handle);

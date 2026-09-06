@@ -131,12 +131,14 @@ set(transitional_headers
     # The escape hatch itself (D9): instance/device/queue for ImGui, and the
     # VkFormat/VkPipelineCache accessors the app's pipeline creation needs.
     "VulkanNative.h"
-    # Pipeline creation stays Vulkan-side until the binding model is neutral
-    # (D8, Stage 8).
+    # Pipeline creation stays Vulkan-side until the binding model is neutral.
+    # D8 deferred this; D15 un-defers it now that D14 neutralises binding.
+    # Removed by Stage 7.5 steps 6 (graphics) and 7 (compute).
     "PipelineBuilder.h"
     "ComputePipelineBuilder.h"
     # Descriptors are deliberately not abstracted in Stage 5 (D7); this is
-    # isolated, not neutral, and goes away with bindless in step 69.
+    # isolated, not neutral. D7 expected bindless to remove it; D14 supersedes
+    # that and neutralises binding directly, so it goes at Stage 7.5 steps 4-5.
     "DescriptorAllocator.h"
     # Names Vulkan objects the application still creates for itself. Shrinks as
     # those move behind the RHI; it is a template, so it cannot move to src/.
@@ -152,8 +154,8 @@ set(transitional_headers
     # parameters, or if it acquires state or a device dependency.
     "SwapchainUtil.h"
     # Begin/submit/wait for a one-shot command buffer. The remaining caller
-    # records a compute dispatch, which ICommandList cannot express until draw
-    # and dispatch recording lands (Stage 8, plan §7).
+    # records a compute dispatch, so it needs both halves: submission behind
+    # IDevice (Stage 7.5 step 2) and Dispatch on ICommandList (step 11).
     "CommandListUtil.h")
 
 set(transitional_dir "${neutral_dir}/vulkan")
@@ -204,23 +206,23 @@ endforeach()
 
 set(transitional_allowlist
     "engine/editor/src/VulkanUiBackend.cpp|VulkanNative.h|ImGui's backend takes instance/device/queue and a VkCommandBuffer by value (D9)"
-    "engine/engine/src/Engine.cpp|PipelineBuilder.h|Graphics pipeline creation is Vulkan-side (D8)"
-    "engine/engine/src/Engine.cpp|VulkanNative.h|The frame loop still records raw draws (B5 removes it)"
-    "engine/engine/src/Engine.cpp|DebugNames.h|Names the pools, sets and sync objects the engine still owns"
-    "engine/engine/src/CloudSystem.cpp|VulkanNative.h|Raw dispatch recording needs the device (D9)"
-    "engine/engine/src/CloudSystem.cpp|ComputePipelineBuilder.h|Compute pipeline creation is Vulkan-side (D8)"
-    "engine/engine/src/CloudSystem.cpp|CommandListUtil.h|The noise bake is a dispatch, not a copy (B1)"
-    "engine/engine/src/CloudSystem.cpp|DebugNames.h|Names the bake's pipeline and descriptor set"
-    "engine/engine/src/MaterialFactory.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted (D7)"
-    "engine/engine/src/MaterialFactory.cpp|VulkanNative.h|Writes descriptor sets directly (D7)"
-    "engine/engine/src/MaterialFactory.cpp|DebugNames.h|Names the material set layout"
-    "engine/engine/src/PBRMaterial.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted (D7)"
-    "engine/engine/src/PBRMaterial.cpp|VulkanNative.h|Writes descriptor sets directly (D7)"
-    "engine/engine/src/PBRMaterial.cpp|DebugNames.h|Names the material descriptor set"
+    "engine/engine/src/Engine.cpp|PipelineBuilder.h|Graphics pipeline creation is Vulkan-side until D15 (step 6)"
+    "engine/engine/src/Engine.cpp|VulkanNative.h|The frame loop still records raw draws — last use goes at step 10"
+    "engine/engine/src/Engine.cpp|DebugNames.h|Names the pools, sets and sync objects the engine still owns (step 12)"
+    "engine/engine/src/CloudSystem.cpp|VulkanNative.h|Raw dispatch recording needs the device — goes at step 11"
+    "engine/engine/src/CloudSystem.cpp|ComputePipelineBuilder.h|Compute pipeline creation is Vulkan-side until D15 (step 7)"
+    "engine/engine/src/CloudSystem.cpp|CommandListUtil.h|The noise bake is a dispatch, not a copy — needs steps 2 and 11"
+    "engine/engine/src/CloudSystem.cpp|DebugNames.h|Names the bake's pipeline and descriptor set (step 12)"
+    "engine/engine/src/MaterialFactory.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted — bind groups replace them at step 5"
+    "engine/engine/src/MaterialFactory.cpp|VulkanNative.h|Writes descriptor sets directly — bind groups replace this at step 5"
+    "engine/engine/src/MaterialFactory.cpp|DebugNames.h|Names the material set layout (step 5)"
+    "engine/engine/src/PBRMaterial.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted — bind groups replace them at step 5"
+    "engine/engine/src/PBRMaterial.cpp|VulkanNative.h|Writes descriptor sets directly — bind groups replace this at step 5"
+    "engine/engine/src/PBRMaterial.cpp|DebugNames.h|Names the material descriptor set (step 5)"
     "tests/unit/rhi/SwapchainUtilTests.cpp|SwapchainUtil.h|Surface states a real display cannot be put into on demand"
     "tests/gpu/rhi/DeviceTests.cpp|VulkanNative.h|The escape hatch is what these cases assert on"
-    "tests/gpu/rhi/PresentTargetTests.cpp|VulkanNative.h|A frame is recorded neutrally but submitted with the target's semaphores, and the RHI hands out no queue (Stage 8)"
-    "tests/support/GpuReadback.h|VulkanNative.h|Readback records raw copies to a host-visible buffer"
+    "tests/gpu/rhi/PresentTargetTests.cpp|VulkanNative.h|A frame is recorded neutrally but submitted with the target's semaphores, and the RHI hands out no queue (step 2)"
+    "tests/support/GpuReadback.h|VulkanNative.h|Readback allocates and submits its own command buffer (step 2)"
 )
 
 # Splitting by hand rather than with file(STRINGS), which would turn every

@@ -23,15 +23,16 @@ architecture, and prefer them over inventing a design:
   **except D7 and D8, superseded by Stage 7.5's D14 and D15.** Read it before touching
   anything under `engine/rhi/include/`. Its §10 lists what should eventually be promoted into
   the architecture plan; retiring it is a deliberate future decision, not a step in the
-  roadmap, though `backend_readiness_plan.md`'s B6 proposes itself as the moment.
+  roadmap, though `backend_readiness_plan.md`'s step 12 proposes itself as the moment.
 - `docs/backend_readiness_plan.md` — **retained, like the RHI plan and for the same reason.**
   Stage 7.5: the four seams a second backend needs and Stage 5 did not build — submission and
   command-list ownership, rendering scope, bind groups, pipelines, and draw/dispatch recording
-  — as six steps (B1–B6), plus the decisions (D14–D18) behind them. It **supersedes D7 and
-  D8**, deferring bindless until after D3D12 and neutralising the binding model instead, and it
+  — as twelve steps, plus the decisions (D14–D26) behind them. It **supersedes D7 and D8**,
+  deferring bindless until after D3D12 and neutralising the binding model instead, and it
   reorders Part IV's Stage 8. Its D-numbers continue the RHI plan's series deliberately: both
-  govern the same seam. **It has not been through `/grill-me` yet, and its §0 says not to start
-  B1 until it has.**
+  govern the same seam. It also defines **Stage 7.6** (the backend's non-seam prerequisites)
+  and the constraints on **Stage 7.7** (the D3D12 backend itself). Grilled on 6 September 2026;
+  its §0 records what that changed, which was substantial.
 
 ---
 
@@ -42,13 +43,26 @@ running application. Do not start work outside the current stage, and do not com
 without asking first. Stage 5 is complete, so Part IV is the work order again — but where
 the **D-series** and Part IV disagree about the RHI's public seam, **the D-series wins**. It
 spans two documents: `docs/rhi_extraction_plan.md` holds D0–D13 and
-`docs/backend_readiness_plan.md` holds D14–D18, which supersede D7 and D8. Part IV was
+`docs/backend_readiness_plan.md` holds D14–D26, which supersede D7 and D8. Part IV was
 written before the seam was neutralised, so its later stages still spell interfaces in raw
 Vulkan; §10.2 is one such place. Re-express rather than copy, and amend Part IV as you go.
 
-**Do not opportunistically refactor.** `src/main.cpp` is ~2,600 lines and is scheduled for
-dismantling across Stages 4–9. Touching it outside its scheduled step creates conflicts with
-the plan. Fix what the step asks for; note anything else you spot rather than fixing it.
+**Do not opportunistically refactor.** `engine/engine/src/Engine.cpp` is ~2,500 lines and is
+scheduled for dismantling in Stage 8, which splits it into `Pass` classes once the frame graph
+decides their shape. Touching it outside its scheduled step creates conflicts with the plan.
+Fix what the step asks for; note anything else you spot rather than fixing it.
+
+**Grill a stage's plan before starting it.** Every stage goes through `/grill-me` before its
+first step — Stage 7 did, Stage 7.5 did, and the interview for 7.5 found that a plan **one day
+old** already had four stale premises and three unnoticed design gaps, one of which (combined
+image samplers, which D3D12 cannot express) would have been discovered mid-backend otherwise.
+
+If a plan has already been grilled, the re-grill before starting is a quick one: four
+mechanical checks — do its file and line references still resolve; have prerequisites it lists
+as pending landed; do the counts and inventories it asserts still match the tree; has another
+document taken a decision that now conflicts with one of its own. It may end in "nothing moved,
+proceed" **only if all four come back clean**. If any of them moved, grill whatever they
+touched properly rather than noting it in a commit message.
 
 **Verify every change with `scripts/precommit.sh`** (configure + build + build tests +
 `ctest -L unit` + `ctest -L gpu` + format-check) before reporting a change as done. It is a
@@ -98,7 +112,10 @@ on every platform whether or not an SDK is installed, and they match the version
 
 The validation layers are the empirical check, not a substitute for the spec — a clean
 validation run proves nothing was caught, not that the code is correct. Synchronization
-validation in particular is off by default and worth enabling when touching barriers.
+validation is off by *Vulkan's* default but on in this project: `VulkanDevice::CreateInstance`
+sets `validate_sync` unconditionally through the `VK_EXT_layer_settings` chain, so every Debug
+run and every GPU test has it. Best-practices validation is the one currently switched off, for
+a layer crash — see `backlog.md`.
 `grep`ping this repo for prior art is also not a source. Known-wrong places to copy from
 today: `ModelData::Init` (`suggested_work.md` §1.6 — a live P0 that dereferences a null
 material), `WriteScreenshot`'s hardcoded BGRA swizzle, `ChooseSwapchainFormat`'s fallback
@@ -122,8 +139,10 @@ even when a task feels finished. Reading (`git status`, `git log`, `git diff`) i
 | 6 — Headless capability | 35–40a | ✅ done (`HeadlessPlatform`, `--headless`, the present-layout seam) |
 | Cleanup between 6 and 7 | — | ✅ done (`Hikari::` namespace + `namespace_check`, CI's `static-checks` job, the `counters`/`timings`/`run` report + `--no-ui`, `docs/backlog.md`) |
 | 7 — Engine shell + DI | 40b, 41–47 | ✅ done (`engine/engine` + `engine/asset` + `engine/editor`, `HikariEditor` + `HikariHeadless`, injected subsystems, the event seam, and headless scene tests in CI) |
-| **7.5 — Backend readiness** | **B1–B6** | **next** — **plan written, grill pending** (`docs/backend_readiness_plan.md`) |
-| 8+ — Frame graph, DOD, scalability | 48–76 | not started; 48–56 partly superseded by Stage 7.5 |
+| **7.5 — Backend readiness** | **1–12** | **next** — grilled 6 Sep 2026, ready to start (`docs/backend_readiness_plan.md`) |
+| 7.6 — Backend prerequisites | — | not started — DXIL, the comparison script, Windows GPU CI, runtime-selectable validation, step 48 extended |
+| 7.7 — D3D12 backend | — | not started — stepped small, Vulkan stays the default |
+| 8+ — Frame graph, DOD, scalability | 48–76 | not started; 48–56 partly superseded by Stage 7.5, and 48 moves to 7.6 |
 
 Update this table when a stage completes.
 
@@ -458,17 +477,17 @@ Other rules:
   `Hikari::Platform::Paths`, `Hikari::Rhi::IDevice`, `Hikari::Rhi::Vulkan::SetVkDebugName`.
   The nesting is uniform and mirrors the directory: `engine/<mod>/include/<mod>/` opens
   `Hikari::<Mod>`, and a subdirectory adds a component. A header may nest deeper for its own
-  grouping (`Hikari::Rhi::BarrierPresets`) but may not open a different module. `src/` is
-  *not* namespaced — it is an executable, and Stages 7–9 dismantle it into engine modules
-  that already are.
+  grouping (`Hikari::Rhi::BarrierPresets`) but may not open a different module. The private
+  sources under `engine/engine/src/` are *not* yet namespaced — they came from the old
+  executable, and Stages 8–9 dismantle them into modules that already are.
 - **`using namespace` is allowed in a `.cpp` and never in a header.** In a header it leaks
   into every translation unit that includes it, transitively, and breaks in whichever
   unrelated file includes it next. Engine sources qualify instead (`Core::LogMsg`), which is
-  short because enclosing-namespace lookup applies inside `Hikari::`; `src/` and tests use
-  directives, since their alternative is churn in code scheduled for demolition. Both halves
-  are enforced by `tests/scripts/namespace_check.sh`.
-- **Include style:** engine modules are included as `<core/Timer.h>`; `src/` files use
-  `"Header.h"` quotes for siblings and `"lib/Header.h"` for third-party.
+  short because enclosing-namespace lookup applies inside `Hikari::`; `engine/engine/src/` and
+  tests use directives, since their alternative is churn in code scheduled for demolition. Both
+  halves are enforced by `tests/scripts/namespace_check.sh`.
+- **Include style:** engine modules are included as `<core/Timer.h>`; a module's own private
+  sources use `"Header.h"` quotes for siblings and `"lib/Header.h"` for third-party.
 - **Errors:** exceptions for unrecoverable init failures; asset loading and parsing should
   log and skip rather than unwind through the frame loop.
 - **RHI naming follows D3D12, not Vulkan**, wherever the two APIs name the same concept
@@ -515,8 +534,10 @@ Other rules:
 
 ## Gotchas
 
-- **`src/main.cpp` holds `App` and the whole renderer** (~2,600 lines). Grep before assuming
-  something lives in its own file. Dismantling it is scheduled work, not incidental work.
+- **`engine/engine/src/Engine.cpp` holds the whole renderer** (~2,500 lines) — the frame loop,
+  the five recorders, the descriptor sets and the pipelines. Grep before assuming something
+  lives in its own file. Dismantling it is scheduled work, not incidental work. Each app is now
+  one `main.cpp` under `apps/`, and neither holds anything worth grepping.
 - **Shaders compile via `slangc` as a build step** into `<exe dir>/shaders/*.spv` — so
   `build/<preset>/shaders/`, one set per configuration, reached at runtime through
   `Paths::Shader()` rather than the content root. They are a build output, not content: the

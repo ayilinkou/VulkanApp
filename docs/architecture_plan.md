@@ -1345,6 +1345,47 @@ property flags, pointers invalidated by `resize`, unchecked `mNormals` dereferen
 sanitized headless scene launch would likely surface several of them automatically on the
 first run.
 
+### 15.7 Comparing two renderers — exact counters, tolerant pixels
+
+Settled during Stage 7.5's grill (`backend_readiness_plan.md` D26) and recorded here because it
+outlives that stage: it is how *any* two renderers of this engine are compared, including two
+D3D12 driver versions, not only Vulkan against D3D12.
+
+Every comparison in the project today is exact. Counters must match the committed baseline
+exactly and the pixel diff must produce an empty bounding box. That works because there is one
+backend on one rasterizer, and it does not survive a second: lavapipe and WARP are different
+rasterizers with different filtering, different rounding in the raster and blend paths, and
+different float contraction in their shader back ends. Two *real* GPUs on the same API disagree
+in the low bits.
+
+**The two signals are therefore split by what each can honestly promise.**
+
+**Counters must match exactly, even across backends.** `drawCalls`, `batches`, `instances`,
+`barriers`, `barrierCalls`, `validationErrors` and `uploadSubmissions` describe what the
+renderer *decided*, not what the rasterizer produced. Two backends disagreeing about a draw
+call count is a bug in one of them, always. This makes the counters strictly more valuable than
+they are with one backend, rather than less.
+
+**Pixels are compared with a tolerance: a per-channel delta with two caps.** No pixel may
+differ by more than N per channel, and at most M% of pixels may differ at all. Each cap catches
+what the other misses — the ceiling catches one catastrophically wrong pixel, the fraction
+catches an image that has drifted slightly everywhere — and a failure can name the worst pixel
+and its coordinates. Rejected: MSE or PSNR, because averaging over a 1920×1080 frame lets a
+single blazing-wrong pixel vanish into the mean, which is exactly the bug being hunted; and
+SSIM, which is more robust to imperceptible differences but yields a score that is hard to act
+on when it fails.
+
+Two things keep the tolerance honest. The thresholds are **committed constants**, so changing
+one is changing an expected test result and is gated by the rule that already requires asking
+first — otherwise a threshold becomes a knob nudged upward whenever CI goes red. And the
+comparison **always reports the measured delta**, not just pass or fail, so drift is visible
+while it is still headroom rather than only on the day it crosses.
+
+**One implementation, two settings.** Within a backend the tolerance is zero and the check stays
+exactly as strict as it is today; across backends it is the configured limits. This is the same
+tool as §15.4's golden comparison rather than a second one — that section's "perceptual metric
+and a tolerance" is superseded by the per-channel form above.
+
 ## 16. Test harness components
 
 These live in `tests/support/` and are the reason the above is cheap to write.
@@ -1652,6 +1693,16 @@ Each step lists:
 | **Size** | XS < 1h · S 1–3h · M ½–1 day · L 2–4 days · XL 1–2 weeks |
 | **Needs** | Steps that must be done first. "—" means it can be done at any time, starting today. |
 
+### Grill the stage before starting it
+
+Every stage's plan goes through `/grill-me` before its first step, and an already-grilled plan
+gets a quick re-grill against four mechanical checks — do its file and line references still
+resolve, have prerequisites it lists as pending landed, do the counts and inventories it
+asserts still match the tree, and has another document taken a decision that conflicts with one
+of its own. It may end in "nothing moved, proceed" only if all four come back clean. The rule
+and its rationale live in `CLAUDE.md`'s working rules; `backend_readiness_plan.md` §0 is the
+worked example of why it exists.
+
 ### The one rule that makes this work
 
 > **Stage 0 comes first, even though it is not architecture.**
@@ -1691,17 +1742,22 @@ document.
 | 9 | 57–68 | Handles, snapshots, radix sort, culling, ECS | ~3 weeks |
 | 10 | 69–76 | Bindless, mega-buffers, async loading, indirect | open-ended |
 
-Stage **7.5** is inserted between 7 and 8 and is not in that table because it is not part of
-Part IV: `docs/backend_readiness_plan.md` carries it as B1–B6. It neutralises the RHI's frame
-API — submission, rendering scope, binding, pipelines, draw and dispatch — which Stage 5 left
-undone and which a D3D12 backend needs before it can be written. It also reorders this table's
-Stage 8 and defers its step 70.
+Stages **7.5**, **7.6** and **7.7** are inserted between 7 and 8 and are not in that table
+because they are not part of Part IV: `docs/backend_readiness_plan.md` carries all three. 7.5
+neutralises the RHI's frame API — submission, rendering scope, binding, pipelines, draw and
+dispatch — which Stage 5 left undone and which a D3D12 backend needs before it can be written,
+as twelve steps. 7.6 builds the backend's non-seam prerequisites: DXIL emission, a
+tolerance-capable comparison script, Windows GPU coverage on WARP, runtime-selectable
+validation, and step 48 extended with per-target layout assertions. 7.7 is the backend itself.
+
+They reorder this table's Stage 8, take step 48 out of it into 7.6, and defer its step 70 until
+after the backend.
 
 **The stated CI goal — "launch a scene headless and assert on it" — is complete at step 47.**
 Steps 48–76 are performance and scalability, and they are much safer to attempt once 47 is
 done, because from then on every change is regression-tested by CI rather than by hand. The
 **backend goal** — "a D3D12 backend is a matter of implementing interfaces rather than
-designing them" — is complete at B6.
+designing them" — is complete at Stage 7.5's step 12.
 
 ---
 

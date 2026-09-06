@@ -2,8 +2,6 @@
 
 #include <memory>
 
-#include "vulkan/vulkan_raii.hpp"
-
 #include <rhi/Handles.h>
 #include <rhi/ICommandAllocator.h>
 #include <rhi/ICommandList.h>

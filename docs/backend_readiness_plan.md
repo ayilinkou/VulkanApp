@@ -866,8 +866,9 @@ steps 6 and 7 each had shrunk to binding geometry and issuing a draw.
 - **Verify:** `rhi_boundary_check` passes against the reduced lists; `precommit.sh` green.
 - **Size:** M
 - **Done. 2 transitional headers used from 4 sites**, against 7 from 18 when the stage began.
-  §8 predicted 2 headers from **3** sites, so the header target is met exactly and the site count
-  is one over — see §8's own correction for the site nobody foresaw.
+  §8 predicted 2 headers from 3 sites; it ended one over, and the extra site was closed
+  immediately afterwards by the format-support query §8 now describes. **The final count is 2
+  headers from 3 sites, exactly as predicted.**
 
   `VulkanNative.h` lost the RAII accessors, the buffer, view, sampler and semaphore resolvers,
   `WrapCommandList`, and the two descriptor accessors added at steps 4 and 6. What remains is
@@ -1017,12 +1018,13 @@ below the table:
 | `SwapchainUtil.h` | `tests/unit/rhi/SwapchainUtilTests.cpp` | Deliberate, and argued in the check itself: the functions are pure and device-free so they can be unit tested, and `src/vulkan/` is on a PRIVATE include path a test cannot reach |
 
 
-**The fourth, which this section did not foresee: `Engine.cpp` still reaches for
-`GetPhysicalDevice`.** Depth format selection queries `VkFormatProperties` to find a format the
-hardware actually supports, and the neutral API has no way to ask whether a format is usable for
-a given purpose. That is a **missing query rather than a leak**: unlike the three above it is not
-permanent, and it goes the moment `IDevice` can answer the question. It is the one piece of
-Vulkan the renderer still writes.
+**A fourth site outlived the stage by a few hours and is now gone.** `Engine.cpp` reached for
+`GetPhysicalDevice` to query `VkFormatProperties` for a usable depth format, because the neutral
+API could not be asked whether a format was usable for a purpose. It can now:
+`IDevice::IsFormatSupported(Format, TextureUsage)` answers it on both backends —
+`optimalTilingFeatures` on Vulkan, `D3D12_FEATURE_DATA_FORMAT_SUPPORT` on D3D12 — and needed no
+new vocabulary, since `TextureUsage` already says what a texture is for. **The count is the 3
+this section predicted**, and the engine names no Vulkan at all.
 
 Note that `GetNative(ICommandList&)` survives step 12 along with the rest of the ImGui-shaped
 hole — ImGui's backend takes a `VkCommandBuffer` by value, and there is no neutral shape for

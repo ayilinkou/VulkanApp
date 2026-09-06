@@ -69,6 +69,14 @@ vk::ShaderStageFlags ToVk(ShaderStage stages);
 
 vk::CullModeFlags ToVk(CullMode mode);
 
+/**
+ * Neutral texture usage to the format features a device must advertise for it.
+ * Separate from the usage-to-VkImageUsageFlags mapping: what a format must
+ * support and what an image is created with are different questions with
+ * different answers.
+ */
+vk::FormatFeatureFlags ToVkFormatFeatures(TextureUsage usage);
+
 vk::AttachmentLoadOp ToVkLoadOp(LoadOp op);
 vk::AttachmentStoreOp ToVkStoreOp(StoreOp op);
 

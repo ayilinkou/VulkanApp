@@ -410,7 +410,12 @@ Two non-obvious rules that the whole test strategy rests on:
 
 **The RHI's public API is backend-neutral, and that is checked rather than trusted.** Nothing
 under `engine/rhi/include/rhi/` may name a Vulkan or VMA type; the backend lives in
-`engine/rhi/src/vulkan/`, where nothing outside the module can reach it. The one exception is
+`engine/rhi/src/vulkan/`, where nothing outside the module can reach it. **And nothing in
+`engine/` or `apps/` outside that module may name Vulkan at all** — checked on names rather
+than includes, because a precompiled header once put the whole API in scope for a module with
+no include and no allowlist entry to show for it. One file is exempt and it is listed: the ImGui
+backend, permanently. A second entry would be a question about which neutral call is missing —
+that is what the last temporary one turned out to be. The one exception is
 `engine/rhi/include/rhi/vulkan/`, which is *frozen*: seven headers covering what Stages 6–8
 have not taken over yet, and eighteen allowlisted include sites outside the module. Adding
 either fails `rhi_boundary_check`, and so does leaving an allowlist entry behind after its

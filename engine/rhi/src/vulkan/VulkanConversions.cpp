@@ -22,6 +22,25 @@ vk::ShaderStageFlags ToVk(ShaderStage stages)
     return result;
 }
 
+vk::FormatFeatureFlags ToVkFormatFeatures(TextureUsage usage)
+{
+    vk::FormatFeatureFlags features{};
+    if (Any(usage & TextureUsage::Sampled))
+        features |= vk::FormatFeatureFlagBits::eSampledImage;
+    if (Any(usage & TextureUsage::Storage))
+        features |= vk::FormatFeatureFlagBits::eStorageImage;
+    if (Any(usage & TextureUsage::ColorAttachment))
+        features |= vk::FormatFeatureFlagBits::eColorAttachment;
+    if (Any(usage & TextureUsage::DepthStencilAttachment))
+        features |= vk::FormatFeatureFlagBits::eDepthStencilAttachment;
+    if (Any(usage & TextureUsage::CopySrc))
+        features |= vk::FormatFeatureFlagBits::eTransferSrc;
+    if (Any(usage & TextureUsage::CopyDst))
+        features |= vk::FormatFeatureFlagBits::eTransferDst;
+
+    return features;
+}
+
 vk::CullModeFlags ToVk(CullMode mode)
 {
     switch (mode)

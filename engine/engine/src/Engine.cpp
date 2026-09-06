@@ -58,7 +58,6 @@
 #include <rhi/TextureViewDesc.h>
 #include <rhi/UniqueHandle.h>
 #include <rhi/UploadContext.h>
-#include <rhi/vulkan/VulkanNative.h>
 
 #include <SDL3/SDL.h>
 
@@ -68,7 +67,6 @@
 using namespace Hikari;
 using namespace Hikari::Core;
 using namespace Hikari::Platform;
-using namespace Hikari::Rhi::Vulkan;
 
 constexpr LogCategory LogWindow("Window");
 constexpr LogCategory LogEngine("Engine");
@@ -179,9 +177,7 @@ public:
            std::chrono::steady_clock::time_point processStart)
         : m_Platform(platform), m_Paths(paths), m_pUiBackend(pUiBackend), m_Spec(std::move(spec)),
           m_Config(config), m_JobSystem(jobSystem), m_Diagnostics(diagnostics),
-          m_RhiDevice(Rhi::CreateDevice(MakeDeviceDesc())),
-          m_PhysicalDevice(Rhi::Vulkan::GetPhysicalDevice(*m_RhiDevice)),
-          m_ProcessStart(processStart)
+          m_RhiDevice(Rhi::CreateDevice(MakeDeviceDesc())), m_ProcessStart(processStart)
     {
         // Sized here rather than at first use: every per-frame resource below is
         // built by index into this, and a run with one frame in flight has to
@@ -473,11 +469,7 @@ private:
      * renderer still needs the Vulkan spelling, and it needs it often enough
      * that converting at each use site would drown the call sites.
      */
-    vk::Extent2D SwapchainExtent() const
-    {
-        const Core::Extent2D extent = m_PresentTarget->GetExtent();
-        return vk::Extent2D{extent.Width, extent.Height};
-    }
+    Core::Extent2D SwapchainExtent() const { return m_PresentTarget->GetExtent(); }
 
     void InitVulkan()
     {
@@ -529,8 +521,8 @@ private:
                                               .ContentPaths = m_Paths,
                                               .GlobalSetLayout = m_GlobalLayout.Get(),
                                               .DepthSetLayout = m_DepthLayout.Get(),
-                                              .SwapchainWidth = SwapchainExtent().width,
-                                              .SwapchainHeight = SwapchainExtent().height,
+                                              .SwapchainWidth = SwapchainExtent().Width,
+                                              .SwapchainHeight = SwapchainExtent().Height,
                                               .FramesInFlight = m_Config.FramesInFlight};
         m_CloudSystem = std::make_unique<CloudSystem>(cloudCreateInfo);
 
@@ -573,8 +565,8 @@ private:
         report.Run = {.bFixedDt = m_Spec.bFixedDt,
                       .bHeadless = m_Platform.IsHeadless(),
                       .bNoUi = m_Spec.bNoUi,
-                      .Width = SwapchainExtent().width,
-                      .Height = SwapchainExtent().height,
+                      .Width = SwapchainExtent().Width,
+                      .Height = SwapchainExtent().Height,
                       .JobCount = static_cast<uint32_t>(m_JobSystem.WorkerCount()),
                       .PresentMode = m_PresentTarget->GetPresentMode(),
                       .BuildConfig = HIKARI_BUILD_CONFIG};
@@ -612,8 +604,8 @@ private:
         }
 
         const uint32_t bytesPerPixel = Rhi::BytesPerTexel(format);
-        const uint32_t width = SwapchainExtent().width;
-        const uint32_t height = SwapchainExtent().height;
+        const uint32_t width = SwapchainExtent().Width;
+        const uint32_t height = SwapchainExtent().Height;
 
         // A capture is RGBA, so a BGRA target needs its first and third channels
         // swapped and an RGBA one needs nothing. The shader is indifferent
@@ -674,8 +666,8 @@ private:
 
     void ShowCursor()
     {
-        m_Platform.WarpMouse(static_cast<float>(SwapchainExtent().width / 2.f),
-                             static_cast<float>(SwapchainExtent().height / 2.f));
+        m_Platform.WarpMouse(static_cast<float>(SwapchainExtent().Width / 2.f),
+                             static_cast<float>(SwapchainExtent().Height / 2.f));
         m_Platform.SetRelativeMouseMode(false);
         m_bCursorVisible = true;
     }
@@ -839,9 +831,9 @@ private:
 
         if (captureScreenshot && !m_bScreenshotBufferReady)
         {
-            const vk::DeviceSize bufferSize = static_cast<vk::DeviceSize>(SwapchainExtent().width) *
-                                              SwapchainExtent().height *
-                                              Rhi::BytesPerTexel(m_PresentTarget->GetFormat());
+            const uint64_t bufferSize = static_cast<uint64_t>(SwapchainExtent().Width) *
+                                        SwapchainExtent().Height *
+                                        Rhi::BytesPerTexel(m_PresentTarget->GetFormat());
             m_ScreenshotStagingBuffer = Rhi::UniqueHandle<Rhi::BufferHandle>(
                 *m_RhiDevice,
                 m_RhiDevice->CreateBuffer(Rhi::BufferDesc{.Size = bufferSize,
@@ -912,8 +904,8 @@ private:
             // load-bearing one — NewFrame asserts it is positive, where
             // DisplaySize need only be non-negative.
             ImGuiIO& io = ImGui::GetIO();
-            io.DisplaySize = ImVec2(static_cast<float>(SwapchainExtent().width),
-                                    static_cast<float>(SwapchainExtent().height));
+            io.DisplaySize = ImVec2(static_cast<float>(SwapchainExtent().Width),
+                                    static_cast<float>(SwapchainExtent().Height));
             io.DeltaTime = m_DeltaTime;
         }
 
@@ -1230,15 +1222,12 @@ private:
     }
 
     /** The whole render target, which is the only area any pass draws to. */
-    Rhi::Rect2D WholeTarget() const
-    {
-        return Rhi::Rect2D{.Extent = {SwapchainExtent().width, SwapchainExtent().height}};
-    }
+    Rhi::Rect2D WholeTarget() const { return Rhi::Rect2D{.Extent = SwapchainExtent()}; }
 
     Rhi::Viewport FullViewport() const
     {
-        return Rhi::Viewport{.Width = static_cast<float>(SwapchainExtent().width),
-                             .Height = static_cast<float>(SwapchainExtent().height)};
+        return Rhi::Viewport{.Width = static_cast<float>(SwapchainExtent().Width),
+                             .Height = static_cast<float>(SwapchainExtent().Height)};
     }
 
     /**
@@ -1499,7 +1488,7 @@ private:
             list->CopyTextureToBuffer(
                 swapTexture, m_ScreenshotStagingBuffer.Get(),
                 Rhi::BufferTextureCopyRegion{
-                    .Extent = {SwapchainExtent().width, SwapchainExtent().height, 1u}});
+                    .Extent = {SwapchainExtent().Width, SwapchainExtent().Height, 1u}});
 
             if (bNeedsFinalTransition)
             {
@@ -1571,12 +1560,12 @@ private:
         CreateDepthResources();
         CreateRenderTargets();
 
-        m_CloudSystem->Resize(SwapchainExtent().width, SwapchainExtent().height);
+        m_CloudSystem->Resize(SwapchainExtent().Width, SwapchainExtent().Height);
         RecreateFrameBindGroups();
 
         m_Camera->SetProjection(m_Camera->GetFOV(),
-                                static_cast<float>(SwapchainExtent().width) /
-                                    static_cast<float>(SwapchainExtent().height),
+                                static_cast<float>(SwapchainExtent().Width) /
+                                    static_cast<float>(SwapchainExtent().Height),
                                 m_Camera->GetNearPlane(), m_Camera->GetFarPlane());
 
         // A recreate may hand back a different format or a different number of
@@ -1696,7 +1685,7 @@ private:
     {
         LogMsg(LogSeverity::Info, LogRenderer, "CreateGlobalBuffers()");
 
-        vk::DeviceSize size = sizeof(GlobalBuffer);
+        uint64_t size = sizeof(GlobalBuffer);
         if (size % 16 != 0)
             throw std::runtime_error(
                 std::format("Buffer must be 16 byte aligned! Size is {}", size));
@@ -1793,7 +1782,7 @@ private:
             m_Frames[i].DepthTexture = Texture(
                 *m_RhiDevice,
                 Rhi::TextureDesc{.Format = m_DepthFormat,
-                                 .Extent = {SwapchainExtent().width, SwapchainExtent().height, 1u},
+                                 .Extent = {SwapchainExtent().Width, SwapchainExtent().Height, 1u},
                                  .Usage = Rhi::TextureUsage::DepthStencilAttachment |
                                           Rhi::TextureUsage::Sampled,
                                  .DebugName = std::format("Frame_{} Depth Image", i)},
@@ -1801,21 +1790,22 @@ private:
         }
     }
 
-    Rhi::Format FindSupportedFormat(std::span<const Rhi::Format> candidates, vk::ImageTiling tiling,
-                                    vk::FormatFeatureFlags features)
+    /**
+     * The first candidate this device can actually use for `usage`.
+     *
+     * A list rather than one format because support is per device: the caller
+     * ranks what it would prefer and the device decides, which is the only way
+     * to ask a question whose answer is hardware's.
+     */
+    Rhi::Format FindSupportedFormat(std::span<const Rhi::Format> candidates,
+                                    Rhi::TextureUsage usage) const
     {
         for (const Rhi::Format format : candidates)
         {
-            const vk::FormatProperties properties =
-                m_PhysicalDevice.getFormatProperties(Rhi::Vulkan::GetNativeFormat(format));
-
-            if (tiling == vk::ImageTiling::eLinear &&
-                (properties.linearTilingFeatures & features) == features)
-                return format;
-            if (tiling == vk::ImageTiling::eOptimal &&
-                (properties.optimalTilingFeatures & features) == features)
+            if (m_RhiDevice->IsFormatSupported(format, usage))
                 return format;
         }
+
         throw std::runtime_error("Failed to find a supported format!");
     }
 
@@ -1832,8 +1822,7 @@ private:
         // through to a fourth candidate.
         static constexpr std::array candidates{Rhi::Format::D32Float, Rhi::Format::D32FloatS8Uint,
                                                Rhi::Format::D24UnormS8Uint};
-        return FindSupportedFormat(candidates, vk::ImageTiling::eOptimal,
-                                   vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+        return FindSupportedFormat(candidates, Rhi::TextureUsage::DepthStencilAttachment);
     }
 
     void CreateInstanceBuffers(uint32_t instanceCapacity)
@@ -1842,7 +1831,7 @@ private:
 
         // TODO: allocating memory 3 times, can probably allocate once and
         // store offsets Can do the same with uniform buffer.
-        vk::DeviceSize size = sizeof(InstanceData) * instanceCapacity;
+        uint64_t size = sizeof(InstanceData) * instanceCapacity;
         for (uint32_t i = 0; i < m_Config.FramesInFlight; i++)
         {
             m_Frames[i].InstanceBuffer = Rhi::UniqueHandle<Rhi::BufferHandle>(
@@ -1902,7 +1891,7 @@ private:
             return Texture(
                 *m_RhiDevice,
                 Rhi::TextureDesc{.Format = format,
-                                 .Extent = {SwapchainExtent().width, SwapchainExtent().height, 1u},
+                                 .Extent = {SwapchainExtent().Width, SwapchainExtent().Height, 1u},
                                  .Usage = Rhi::TextureUsage::ColorAttachment |
                                           Rhi::TextureUsage::Sampled,
                                  .DebugName = name},
@@ -2011,7 +2000,6 @@ private:
      * there is exactly one owner. Each of these disappears as the corresponding
      * resource type moves behind IDevice.
      */
-    vk::raii::PhysicalDevice& m_PhysicalDevice;
 
     /**
      * The frame loop's fence, and the last value handed to it. Monotonic, so it

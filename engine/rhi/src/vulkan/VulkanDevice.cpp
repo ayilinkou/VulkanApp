@@ -761,6 +761,17 @@ vk::BlendOp ToVkBlendOp(BlendOp op)
 
 } // namespace
 
+bool VulkanDevice::IsFormatSupported(Format format, TextureUsage usage) const
+{
+    // Optimal tiling only. Nothing in this engine creates a linearly tiled
+    // image, and a query that offered the choice would be offering something no
+    // caller can act on -- D3D12 has no tiling concept to expose.
+    const vk::FormatProperties properties = m_PhysicalDevice.getFormatProperties(ToVk(format));
+    const vk::FormatFeatureFlags required = ToVkFormatFeatures(usage);
+
+    return (properties.optimalTilingFeatures & required) == required;
+}
+
 PipelineLayoutHandle VulkanDevice::CreatePipelineLayout(const PipelineLayoutDesc& desc)
 {
     std::vector<vk::DescriptorSetLayout> setLayouts;

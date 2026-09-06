@@ -80,6 +80,8 @@ public:
     vk::DescriptorSet GetDescriptorSet(BindGroupHandle handle) const;
     vk::DescriptorSetLayout GetDescriptorSetLayout(BindGroupLayoutHandle handle) const;
 
+    bool IsFormatSupported(Format format, TextureUsage usage) const override;
+
     PipelineLayoutHandle CreatePipelineLayout(const PipelineLayoutDesc& desc) override;
     void Destroy(PipelineLayoutHandle handle) override;
     ShaderModuleHandle CreateShaderModule(const ShaderModuleDesc& desc) override;

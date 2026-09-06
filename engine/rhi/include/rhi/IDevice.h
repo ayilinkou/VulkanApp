@@ -156,6 +156,21 @@ public:
     CreateCommandAllocator(const CommandAllocatorDesc& desc) = 0;
 
     /**
+     * Whether this device can use `format` for `usage`.
+     *
+     * The one question the renderer used to ask Vulkan directly: depth format
+     * selection walks a candidate list and takes the first the hardware
+     * supports. Both APIs answer it -- Vulkan through
+     * VkFormatProperties::optimalTilingFeatures, D3D12 through
+     * D3D12_FEATURE_DATA_FORMAT_SUPPORT -- and TextureUsage is already the
+     * neutral vocabulary for what a texture is for, so nothing new had to be
+     * invented to ask it.
+     *
+     * `usage` may name several bits, and all of them must be supported.
+     */
+    virtual bool IsFormatSupported(Format format, TextureUsage usage) const = 0;
+
+    /**
      * --- Binding ---
      *
      * A layout is the shape and a group is one filling of it. Groups are

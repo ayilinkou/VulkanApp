@@ -103,6 +103,8 @@ public:
         return static_cast<uint32_t>(DestroyedBindGroups.size());
     }
 
+    bool IsFormatSupported(Format, TextureUsage) const override { return true; }
+
     PipelineLayoutHandle CreatePipelineLayout(const PipelineLayoutDesc&) override
     {
         return PipelineLayoutHandle::FromIndexAndGeneration(m_NextIndex++, 0u);

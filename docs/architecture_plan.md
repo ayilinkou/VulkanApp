@@ -2770,23 +2770,26 @@ and a real-content one.
 
 ## Stage 8 — Passes & frame graph (steps 48–56)
 
-> **Stage 7.5 comes first, and changes this stage.** `docs/backend_readiness_plan.md` inserts
-> six steps (B1–B6) that neutralise submission, rendering scope, binding, pipelines and
+> **Stages 7.5 to 7.7 come first, and change this stage.** `docs/backend_readiness_plan.md`
+> inserted twelve steps that neutralised submission, rendering scope, binding, pipelines and
 > draw/dispatch recording — the prerequisites for a D3D12 backend, none of which this stage
-> was written to provide. Three consequences here:
+> was written to provide. Stage 7.5 is complete; 7.6 and 7.7 follow it. Four consequences here:
 >
-> - **50–54 follow B1–B6, not the reverse** (D18). Each recorder is then moved onto the neutral
->   API once and into a `Pass` class once, rather than having `Pass::Execute` take a
+> - **50–54 follow that work, not the reverse** (D18). Each recorder is then moved onto the
+>   neutral API once and into a `Pass` class once, rather than having `Pass::Execute` take a
 >   `vk::CommandBuffer` and be edited again later.
 > - **Step 56, the frame graph, is deferred past the D3D12 backend.** A second backend needs a
 >   neutral command list, not a graph; building the graph against one backend bakes in its
 >   assumptions. 55 folds into 56 as this stage already suggests.
-> - **48 and 49 are unaffected**, and 48 is worth pulling early — two backends mean two shader
->   targets and double the ways a hand-mirrored GPU struct layout drifts silently.
+> - **Step 48 is executed in Stage 7.6, extended.** Two shader targets mean a hand-mirrored GPU
+>   struct can drift twice over, and sharing the declaration removes only the transcription
+>   error — the layout rules themselves differ between SPIR-V and DXIL, which is what corrupts
+>   on exactly one backend. It keeps its number; only the stage that runs it moved.
+> - **49 is unaffected.**
 
 ### 48. `ShaderTypes.h` shared with Slang
-- **Do:** Move `GlobalBuffer`/`CameraData`/`LightData` (`main.cpp:73-102`) and
-  `shaders/common.slangh:3-45` into one header included by both, with `static_assert`s on
+- **Do:** Move `GlobalBuffer`/`CameraData`/`LightData` (`engine/engine/src/Engine.cpp:75-106`)
+  and `shaders/common.slangh:3-45` into one header included by both, with `static_assert`s on
   `sizeof` and `offsetof` for every field.
 - **Verify:** Output unchanged. Deliberately reorder two fields in the shared struct and
   confirm you get a **compile error**, not a rendering artefact. Revert.

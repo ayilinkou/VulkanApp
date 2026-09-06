@@ -51,6 +51,33 @@ inline constexpr std::array<BindGroupLayoutBinding, 5> kComposite{
         .Slot = 4u, .Type = BindingType::Sampler, .Visibility = ShaderStage::Pixel}};
 
 /**
+ * A material's three maps and the sampler that reads all of them.
+ *
+ * Every texture is optional. A mesh with no normal map leaves that slot empty
+ * rather than binding a placeholder, and the shader branches on a push constant
+ * instead -- which is why losing the optional flag would not fail a build or a
+ * validation run, it would change what an untextured model looks like.
+ *
+ * One sampler for three textures, because all three are read the same way. The
+ * cap of three is `TextureBinding::COUNT` and is deliberate (D14).
+ */
+inline constexpr std::array<BindGroupLayoutBinding, 4> kMaterial{
+    BindGroupLayoutBinding{.Slot = 0u,
+                           .Type = BindingType::Texture,
+                           .Visibility = ShaderStage::Pixel,
+                           .bOptional = true},
+    BindGroupLayoutBinding{.Slot = 1u,
+                           .Type = BindingType::Texture,
+                           .Visibility = ShaderStage::Pixel,
+                           .bOptional = true},
+    BindGroupLayoutBinding{.Slot = 2u,
+                           .Type = BindingType::Texture,
+                           .Visibility = ShaderStage::Pixel,
+                           .bOptional = true},
+    BindGroupLayoutBinding{
+        .Slot = 3u, .Type = BindingType::Sampler, .Visibility = ShaderStage::Pixel}};
+
+/**
  * The depth buffer, read by the transparent pass and by the cloud dispatch --
  * which is why visibility spans compute as well as pixel, and why a
  * graphics-only assumption about stages would not have survived this layout.

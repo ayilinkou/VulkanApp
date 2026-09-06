@@ -64,6 +64,21 @@ struct BindGroupLayoutBinding
     uint32_t Slot = 0u;
     BindingType Type = BindingType::UniformBuffer;
     ShaderStage Visibility = ShaderStage::None;
+
+    /**
+     * The slot may be left empty, and the shader must then not read it.
+     *
+     * What a material set needs: a mesh with no normal map leaves that slot
+     * unfilled rather than binding a dummy texture, and the shader branches on a
+     * push constant instead. Vulkan spells the permission
+     * VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT and requires the feature bit to
+     * match; D3D12 gets there differently, since a descriptor a shader does not
+     * access need not be valid in the first place.
+     *
+     * Off by default, because leaving a slot empty that the shader *does* read
+     * is undefined behaviour on both APIs rather than an error either reports.
+     */
+    bool bOptional = false;
 };
 
 struct BindGroupLayoutDesc

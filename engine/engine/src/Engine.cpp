@@ -1077,7 +1077,7 @@ private:
                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
 
         std::array setLayouts{NativeSetLayout(m_GlobalLayout.Get()),
-                              m_MaterialFactory->GetDescriptorSetLayout()};
+                              NativeSetLayout(m_MaterialFactory->GetLayout())};
 
         vk::PushConstantRange pushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eFragment,
                                                 .size = sizeof(PBRMaterial::MaterialData)};
@@ -1136,7 +1136,7 @@ private:
               .colorWriteMask = vk::ColorComponentFlagBits::eR}}};
 
         std::array<vk::DescriptorSetLayout, 2> setLayouts = {
-            NativeSetLayout(m_GlobalLayout.Get()), m_MaterialFactory->GetDescriptorSetLayout()};
+            NativeSetLayout(m_GlobalLayout.Get()), NativeSetLayout(m_MaterialFactory->GetLayout())};
 
         vk::PushConstantRange pushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eFragment,
                                                 .size = sizeof(PBRMaterial::MaterialData)};
@@ -1375,7 +1375,7 @@ private:
             cmd.bindIndexBuffer(Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.IndexBuffer), 0,
                                 vk::IndexType::eUint32);
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_OpaquePipelineLayout, 1,
-                                   batch.pMaterial->GetDescriptorSet(), nullptr);
+                                   NativeSet(batch.pMaterial->GetBindGroup()), nullptr);
             cmd.pushConstants<PBRMaterial::MaterialData>(
                 m_OpaquePipelineLayout, vk::ShaderStageFlagBits::eFragment, 0u,
                 *static_cast<PBRMaterial::MaterialData*>(batch.pMaterial->GetPushConstantData()));
@@ -1451,7 +1451,7 @@ private:
             cmd.bindIndexBuffer(Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.IndexBuffer), 0,
                                 vk::IndexType::eUint32);
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_TransparentPipelineLayout, 1,
-                                   batch.pMaterial->GetDescriptorSet(), nullptr);
+                                   NativeSet(batch.pMaterial->GetBindGroup()), nullptr);
             cmd.pushConstants<PBRMaterial::MaterialData>(
                 m_TransparentPipelineLayout, vk::ShaderStageFlagBits::eFragment, 0u,
                 *static_cast<PBRMaterial::MaterialData*>(batch.pMaterial->GetPushConstantData()));

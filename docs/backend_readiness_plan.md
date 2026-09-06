@@ -728,6 +728,25 @@ applies to every step here without anything being switched on first.
   step 47's matrix, which are the ones that exercise partial binding. Same sampler state means
   the capture should be pixel-identical, so any movement here is a real defect.
 - **Size:** L
+- **Done.** The neutral layout grew one field for this step: `BindGroupLayoutBinding::bOptional`,
+  which is what lets a slot be left empty. All three material textures set it, the sampler does
+  not, and the bind group description simply omits the maps a material lacks. Vulkan spells the
+  permission `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT`; D3D12 reaches the same place from the
+  other direction, since a descriptor a shader never accesses need not be valid. The flags
+  structure is chained only when a layout actually asks for it.
+
+  The material set carried a second sampler split, like the composite one: three combined image
+  samplers became three textures plus one shared sampler, in `opaque.slang` and
+  `weightedBlendedOIT.slang`.
+
+  **`DescriptorAllocator.h` left the transitional area by moving rather than by deletion.** The
+  RHI itself now allocates bind groups through it, so the header still exists — it just lives in
+  `src/vulkan/` where nothing outside the module can reach it, which is the same outcome the
+  ratchet was measuring. Six allowlist entries went with it: **7 headers from 16 sites down to
+  6 from 10**.
+
+  The pinned inventory is four of six layouts. `CloudSystem`'s two remain, and they need
+  `UnorderedAccessTexture` before they can move — see D14's second correction.
 
 ### 6 — Graphics pipelines and pipeline layouts
 

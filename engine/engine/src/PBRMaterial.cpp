@@ -4,20 +4,17 @@
 
 #include "AssetRegistry.h"
 
-#include <rhi/vulkan/DebugNames.h>
-#include <rhi/vulkan/VulkanNative.h>
+#include "BindGroupLayouts.h"
 
 using namespace Hikari;
-using namespace Hikari::Rhi::Vulkan;
 
-PBRMaterial::PBRMaterial(Rhi::IDevice& rhiDevice, DescriptorAllocator& descriptorAllocator,
-                         vk::raii::DescriptorSetLayout& setLayout, Rhi::SamplerHandle sampler,
-                         aiMaterial* mat, const std::string& texturesParentFolder,
-                         AssetRegistry& assets)
+PBRMaterial::PBRMaterial(Rhi::IDevice& rhiDevice, Rhi::BindGroupLayoutHandle materialLayout,
+                         Rhi::SamplerHandle sampler, aiMaterial* mat,
+                         const std::string& texturesParentFolder, AssetRegistry& assets)
     : Material(mat)
 {
     LoadTextures(mat, texturesParentFolder, assets);
-    CreateDescriptorSet(rhiDevice, descriptorAllocator, setLayout, sampler);
+    CreateBindGroup(rhiDevice, materialLayout, sampler);
 }
 
 void PBRMaterial::LoadTextures(aiMaterial* mat, const std::string& texturesParentFolder,
@@ -70,73 +67,35 @@ void PBRMaterial::LoadTextures(aiMaterial* mat, const std::string& texturesParen
     mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, m_MatData.Roughness);
 }
 
-void PBRMaterial::CreateDescriptorSet(Rhi::IDevice& rhiDevice,
-                                      DescriptorAllocator& descriptorAllocator,
-                                      vk::raii::DescriptorSetLayout& materialSetLayout,
-                                      Rhi::SamplerHandle sampler)
+void PBRMaterial::CreateBindGroup(Rhi::IDevice& rhiDevice,
+                                  Rhi::BindGroupLayoutHandle materialLayout,
+                                  Rhi::SamplerHandle sampler)
 {
-    // Descriptor writes still take raw Vulkan objects: the binding model is the
-    // one part of Stage 5 that stays Vulkan-shaped (plan D7), so this is where
-    // the handles are resolved back.
-    vk::raii::Device& device = Rhi::Vulkan::GetDevice(rhiDevice);
-    const vk::Sampler vkSampler = Rhi::Vulkan::GetSampler(rhiDevice, sampler);
+    // A slot is filled only when the material has that map. The layout marks all
+    // three optional, so an absent one stays empty and the shader branches on a
+    // push constant rather than reading a placeholder.
+    std::vector<Rhi::BindGroupBinding> bindings;
+    bindings.reserve(EngineBindGroups::kMaterial.size());
 
-    const auto viewOf = [&rhiDevice](const std::shared_ptr<Texture>& texture)
+    const auto bind = [&](uint32_t slot, const std::shared_ptr<Texture>& texture)
     {
-        return texture ? Rhi::Vulkan::GetImageView(rhiDevice, texture->GetView()) : vk::ImageView{};
+        if (texture)
+        {
+            bindings.push_back(Rhi::BindGroupBinding{
+                .Slot = slot, .Type = Rhi::BindingType::Texture, .View = texture->GetView()});
+        }
     };
 
-    m_DescriptorSet = descriptorAllocator.Allocate(*materialSetLayout);
-    SetVkDebugName(device, *m_DescriptorSet, vk::ObjectType::eDescriptorSet,
-                   std::format("{} Material Descriptor Set", m_Name).c_str());
+    bind(TextureBinding::Albedo, m_Albedo);
+    bind(TextureBinding::Normal, m_Normal);
+    bind(TextureBinding::MetallicRoughness, m_MetallicRoughness);
 
-    vk::DescriptorImageInfo albedoInfo{.sampler = vkSampler,
-                                       .imageView = viewOf(m_Albedo),
-                                       .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-    vk::DescriptorImageInfo normalInfo{.sampler = vkSampler,
-                                       .imageView = viewOf(m_Normal),
-                                       .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-    vk::DescriptorImageInfo metallicRoughnessInfo{.sampler = vkSampler,
-                                                  .imageView = viewOf(m_MetallicRoughness),
-                                                  .imageLayout =
-                                                      vk::ImageLayout::eShaderReadOnlyOptimal};
+    bindings.push_back(
+        Rhi::BindGroupBinding{.Slot = 3u, .Type = Rhi::BindingType::Sampler, .Sampler = sampler});
 
-    std::vector<vk::WriteDescriptorSet> writeDescriptors;
-    if (m_Albedo)
-    {
-        vk::WriteDescriptorSet albedoWriteSet{.dstSet = m_DescriptorSet,
-                                              .dstBinding = TextureBinding::Albedo,
-                                              .dstArrayElement = 0u,
-                                              .descriptorCount = 1u,
-                                              .descriptorType =
-                                                  vk::DescriptorType::eCombinedImageSampler,
-                                              .pImageInfo = &albedoInfo};
-        writeDescriptors.push_back(albedoWriteSet);
-    }
-
-    if (m_Normal)
-    {
-        vk::WriteDescriptorSet normalWriteSet{.dstSet = m_DescriptorSet,
-                                              .dstBinding = TextureBinding::Normal,
-                                              .dstArrayElement = 0u,
-                                              .descriptorCount = 1u,
-                                              .descriptorType =
-                                                  vk::DescriptorType::eCombinedImageSampler,
-                                              .pImageInfo = &normalInfo};
-        writeDescriptors.push_back(normalWriteSet);
-    }
-
-    if (m_MetallicRoughness)
-    {
-        vk::WriteDescriptorSet metallicRoughnessWriteSet{
-            .dstSet = m_DescriptorSet,
-            .dstBinding = TextureBinding::MetallicRoughness,
-            .dstArrayElement = 0u,
-            .descriptorCount = 1u,
-            .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-            .pImageInfo = &metallicRoughnessInfo};
-        writeDescriptors.push_back(metallicRoughnessWriteSet);
-    };
-
-    device.updateDescriptorSets(writeDescriptors, {});
+    m_BindGroup = Rhi::UniqueHandle<Rhi::BindGroupHandle>(
+        rhiDevice, rhiDevice.CreateBindGroup(Rhi::BindGroupDesc{
+                       .Layout = materialLayout,
+                       .Bindings = bindings,
+                       .DebugName = std::format("{} Material Bind Group", m_Name)}));
 }

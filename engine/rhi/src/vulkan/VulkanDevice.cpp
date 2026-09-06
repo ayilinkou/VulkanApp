@@ -586,8 +586,29 @@ BindGroupLayoutHandle VulkanDevice::CreateBindGroupLayout(const BindGroupLayoutD
                                            .stageFlags = ToVkShaderStages(binding.Visibility)});
     }
 
-    const vk::DescriptorSetLayoutCreateInfo createInfo{
-        .bindingCount = static_cast<uint32_t>(bindings.size()), .pBindings = bindings.data()};
+    // Per-binding flags are chained only when something asks for them: an empty
+    // flags array is legal but says nothing, and a layout that never needs
+    // partial binding should not be requesting a feature to get it.
+    std::vector<vk::DescriptorBindingFlags> bindingFlags;
+    bindingFlags.reserve(desc.Bindings.size());
+    bool bAnyOptional = false;
+    for (const BindGroupLayoutBinding& binding : desc.Bindings)
+    {
+        bindingFlags.push_back(
+            binding.bOptional
+                ? vk::DescriptorBindingFlags{vk::DescriptorBindingFlagBits::ePartiallyBound}
+                : vk::DescriptorBindingFlags{});
+        bAnyOptional = bAnyOptional || binding.bOptional;
+    }
+
+    const vk::DescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
+        .bindingCount = static_cast<uint32_t>(bindingFlags.size()),
+        .pBindingFlags = bindingFlags.data()};
+
+    const vk::DescriptorSetLayoutCreateInfo createInfo{.pNext = bAnyOptional ? &flagsInfo : nullptr,
+                                                       .bindingCount =
+                                                           static_cast<uint32_t>(bindings.size()),
+                                                       .pBindings = bindings.data()};
 
     VulkanBindGroupLayout layout{vk::raii::DescriptorSetLayout(m_Device, createInfo)};
 

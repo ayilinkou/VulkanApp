@@ -136,10 +136,6 @@ set(transitional_headers
     # Removed by Stage 7.5 steps 6 (graphics) and 7 (compute).
     "PipelineBuilder.h"
     "ComputePipelineBuilder.h"
-    # Descriptors are deliberately not abstracted in Stage 5 (D7); this is
-    # isolated, not neutral. D7 expected bindless to remove it; D14 supersedes
-    # that and neutralises binding directly, so it goes at Stage 7.5 steps 4-5.
-    "DescriptorAllocator.h"
     # Names Vulkan objects the application still creates for itself. Shrinks as
     # those move behind the RHI; it is a template, so it cannot move to src/.
     "DebugNames.h"
@@ -213,12 +209,6 @@ set(transitional_allowlist
     "engine/engine/src/CloudSystem.cpp|ComputePipelineBuilder.h|Compute pipeline creation is Vulkan-side until D15 (step 7)"
     "engine/engine/src/CloudSystem.cpp|CommandListUtil.h|The noise bake is a dispatch, not a copy — needs steps 2 and 11"
     "engine/engine/src/CloudSystem.cpp|DebugNames.h|Names the bake's pipeline and descriptor set (step 12)"
-    "engine/engine/src/MaterialFactory.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted — bind groups replace them at step 5"
-    "engine/engine/src/MaterialFactory.cpp|VulkanNative.h|Writes descriptor sets directly — bind groups replace this at step 5"
-    "engine/engine/src/MaterialFactory.cpp|DebugNames.h|Names the material set layout (step 5)"
-    "engine/engine/src/PBRMaterial.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted — bind groups replace them at step 5"
-    "engine/engine/src/PBRMaterial.cpp|VulkanNative.h|Writes descriptor sets directly — bind groups replace this at step 5"
-    "engine/engine/src/PBRMaterial.cpp|DebugNames.h|Names the material descriptor set (step 5)"
     "tests/unit/rhi/SwapchainUtilTests.cpp|SwapchainUtil.h|Surface states a real display cannot be put into on demand"
     "tests/gpu/rhi/DeviceTests.cpp|VulkanNative.h|The escape hatch is what these cases assert on"
 )

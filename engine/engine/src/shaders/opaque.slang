@@ -73,11 +73,16 @@ VS_Out vertMain(VS_In v)
 
 // [[vk::binding(binding, set)]]
 [[vk::binding(0, 1)]]
-Sampler2D albedoTex;
+Texture2D<float4> albedoTex;
 [[vk::binding(1, 1)]]
-Sampler2D normalTex;
+Texture2D<float4> normalTex;
 [[vk::binding(2, 1)]]
-Sampler2D metallicRoughnessTex;
+Texture2D<float4> metallicRoughnessTex;
+// One sampler for all three: they are read the same way, and a combined image
+// sampler is not something the RHI's binding model has (D3D12 has no such
+// descriptor).
+[[vk::binding(3, 1)]]
+SamplerState materialSampler;
 [[vk::push_constant]]
 MaterialPushConstant pcMatData;
 
@@ -86,7 +91,7 @@ float4 fragMain(VS_Out f) : SV_Target
 {
 	float4 albedo;
 	if (pcMatData.bHasAlbedoTex)
-		albedo = albedoTex.Sample(f.TexCoord);
+		albedo = albedoTex.Sample(materialSampler, f.TexCoord);
 	else
 		albedo = pcMatData.Albedo;
 
@@ -96,8 +101,8 @@ float4 fragMain(VS_Out f) : SV_Target
 	float metallic, roughness;
 	if (pcMatData.bHasMetallicRoughnessTex)
 	{
-		metallic = metallicRoughnessTex.Sample(f.TexCoord).b;
-		roughness = metallicRoughnessTex.Sample(f.TexCoord).g;
+		metallic = metallicRoughnessTex.Sample(materialSampler, f.TexCoord).b;
+		roughness = metallicRoughnessTex.Sample(materialSampler, f.TexCoord).g;
 	}
 	else
 	{
@@ -111,7 +116,7 @@ float4 fragMain(VS_Out f) : SV_Target
 	float3 N;
 	if (pcMatData.bHasNormalTex)
 	{
-		float3 tangentNormal = normalTex.Sample(f.TexCoord).xyz; // packed tangent space normal
+		float3 tangentNormal = normalTex.Sample(materialSampler, f.TexCoord).xyz; // packed tangent space normal
 		tangentNormal = tangentNormal * 2.f - float3(1.f); // unpacked tangent space
 
 		float3 T = normalize(f.Tangent.xyz);

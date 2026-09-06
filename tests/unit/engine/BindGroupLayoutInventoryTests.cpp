@@ -19,16 +19,34 @@
  */
 using namespace Hikari::Rhi;
 
-TEST_CASE("The renderer declares exactly three bind group layouts", "[engine][binding]")
+TEST_CASE("The renderer declares exactly four bind group layouts", "[engine][binding]")
 {
-    // Three of six. The material layout is MaterialFactory's until step 5, and
-    // CloudSystem owns two more -- a dispatch set and a noise-bake set, both
-    // holding storage images the binding vocabulary cannot yet describe. Each
-    // joins this file when it moves behind the neutral API rather than escaping
-    // it, and this count rises with them.
+    // Four of six. CloudSystem owns the other two -- a dispatch set and a
+    // noise-bake set, both holding storage images the binding vocabulary cannot
+    // yet describe. Each joins this file when it moves behind the neutral API
+    // rather than escaping it, and this count rises with them.
     CHECK(EngineBindGroups::kGlobal.size() == 1u);
     CHECK(EngineBindGroups::kComposite.size() == 5u);
     CHECK(EngineBindGroups::kDepth.size() == 1u);
+    CHECK(EngineBindGroups::kMaterial.size() == 4u);
+}
+
+TEST_CASE("Every material texture is optional, and the sampler is not", "[engine][binding]")
+{
+    // The load-bearing assertion of the whole file. A material with no normal
+    // map leaves that slot empty; if these stopped being optional, nothing would
+    // fail to build and no validation message would appear -- the untextured
+    // models would simply start reading a descriptor that was never written.
+    for (uint32_t slot = 0u; slot < 3u; slot++)
+    {
+        INFO("slot " << slot);
+        CHECK(EngineBindGroups::kMaterial[slot].Type == BindingType::Texture);
+        CHECK(EngineBindGroups::kMaterial[slot].bOptional);
+    }
+
+    // Always present, so not optional: every material samples through it.
+    CHECK(EngineBindGroups::kMaterial[3].Type == BindingType::Sampler);
+    CHECK_FALSE(EngineBindGroups::kMaterial[3].bOptional);
 }
 
 TEST_CASE("The global layout is one uniform buffer visible everywhere", "[engine][binding]")

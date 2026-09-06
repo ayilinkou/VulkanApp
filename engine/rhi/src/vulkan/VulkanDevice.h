@@ -22,13 +22,12 @@
 #include <rhi/TextureViewDesc.h>
 #include <rhi/UploadContext.h>
 
+#include "vulkan/DescriptorAllocator.h"
 #include "vulkan/OwnershipTransfer.h"
 #include "vulkan/QueueFamilies.h"
 #include "vulkan/VulkanAllocator.h"
-#include "vulkan/VulkanBuffer.h"
-#include <rhi/vulkan/DescriptorAllocator.h>
-
 #include "vulkan/VulkanBindGroup.h"
+#include "vulkan/VulkanBuffer.h"
 #include "vulkan/VulkanFence.h"
 #include "vulkan/VulkanSampler.h"
 #include "vulkan/VulkanSemaphore.h"

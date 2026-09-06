@@ -33,6 +33,11 @@ public:
     void Begin() override;
     void End() override;
 
+    void BeginRendering(const RenderingDesc& desc) override;
+    void EndRendering() override;
+    void SetViewport(const Viewport& viewport) override;
+    void SetScissor(const Rect2D& rect) override;
+
     BarrierCounts Barrier(std::span<const TextureBarrier> barriers) override;
     BarrierCounts Barrier(const TextureBarrier& barrier) override;
 

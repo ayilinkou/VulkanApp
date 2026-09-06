@@ -1255,6 +1255,18 @@ private:
         return *recorder.List;
     }
 
+    /** The whole render target, which is the only area any pass draws to. */
+    Rhi::Rect2D WholeTarget() const
+    {
+        return Rhi::Rect2D{.Extent = {SwapchainExtent().width, SwapchainExtent().height}};
+    }
+
+    Rhi::Viewport FullViewport() const
+    {
+        return Rhi::Viewport{.Width = static_cast<float>(SwapchainExtent().width),
+                             .Height = static_cast<float>(SwapchainExtent().height)};
+    }
+
     /**
      * The VkImageView a handle names.
      *
@@ -1310,35 +1322,20 @@ private:
             Rhi::BarrierPresets::UndefinedToRenderTarget().On(frame.OpaqueTexture.GetHandle())};
         m_OpaqueBarrierCounts = list->Barrier(openingBarriers);
 
-        vk::ClearValue clearColor =
-            vk::ClearColorValue(m_Config.SkyColor.r, m_Config.SkyColor.g, m_Config.SkyColor.b, 1.f);
-        vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.f, 0);
-        vk::RenderingAttachmentInfo colorAttachmentInfo = {
-            .imageView = NativeView(frame.OpaqueTexture.GetView()),
-            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .loadOp = vk::AttachmentLoadOp::eClear,
-            .storeOp = vk::AttachmentStoreOp::eStore,
-            .clearValue = clearColor};
-        vk::RenderingAttachmentInfo depthAttachmentInfo = {
-            .imageView = NativeView(frame.DepthTexture.GetView()),
-            .imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
-            .loadOp = vk::AttachmentLoadOp::eClear,
-            .storeOp = vk::AttachmentStoreOp::eStore,
-            .clearValue = clearDepth};
+        const std::array renderTargets{Rhi::RenderTarget{
+            .View = frame.OpaqueTexture.GetView(),
+            .Load = Rhi::LoadOp::Clear,
+            .ClearColor = {m_Config.SkyColor.r, m_Config.SkyColor.g, m_Config.SkyColor.b, 1.f}}};
+        const Rhi::DepthStencilTarget depthTarget{.View = frame.DepthTexture.GetView(),
+                                                  .Load = Rhi::LoadOp::Clear};
 
-        vk::RenderingInfo renderingInfo = {
-            .renderArea = {.offset = {0, 0}, .extent = SwapchainExtent()},
-            .layerCount = 1,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &colorAttachmentInfo,
-            .pDepthAttachment = &depthAttachmentInfo};
-
-        cmd.beginRendering(renderingInfo);
+        list->BeginRendering(Rhi::RenderingDesc{.RenderArea = WholeTarget(),
+                                                .RenderTargets = renderTargets,
+                                                .pDepthStencil = &depthTarget});
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_OpaquePipeline);
 
-        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(SwapchainExtent().width),
-                                        static_cast<float>(SwapchainExtent().height), 0.f, 1.f));
-        cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), SwapchainExtent()));
+        list->SetViewport(FullViewport());
+        list->SetScissor(WholeTarget());
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_OpaquePipelineLayout, 0,
                                *frame.GlobalBufferDescriptorSet, nullptr);
 
@@ -1376,7 +1373,7 @@ private:
         m_OpaqueBatchCount = static_cast<uint32_t>(batches.size());
         m_OpaqueInstanceCount = instanceCount;
 
-        cmd.endRendering();
+        list->EndRendering();
 
         list->End();
     }
@@ -1405,38 +1402,25 @@ private:
                 frame.DepthTexture.GetHandle())};
         m_TransparentBarrierCounts = list->Barrier(openingBarriers);
 
-        vk::ClearValue accumClearColor = vk::ClearColorValue(0.f, 0.f, 0.f, 0.f);
-        vk::ClearValue revealageClearColor = vk::ClearColorValue(1.f, 0.f, 0.f, 0.f);
-        std::array<vk::RenderingAttachmentInfo, 2> colorAttachmentInfos = {
-            {{.imageView = NativeView(frame.AccumTexture.GetView()),
-              .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-              .loadOp = vk::AttachmentLoadOp::eClear,
-              .storeOp = vk::AttachmentStoreOp::eStore,
-              .clearValue = accumClearColor},
-             {.imageView = NativeView(frame.RevealageTexture.GetView()),
-              .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-              .loadOp = vk::AttachmentLoadOp::eClear,
-              .storeOp = vk::AttachmentStoreOp::eStore,
-              .clearValue = revealageClearColor}}};
-        vk::RenderingAttachmentInfo depthAttachmentInfo = {
-            .imageView = NativeView(frame.DepthTexture.GetView()),
-            .imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal,
-            .loadOp = vk::AttachmentLoadOp::eLoad,
-            .storeOp = vk::AttachmentStoreOp::eNone};
+        const std::array renderTargets{Rhi::RenderTarget{.View = frame.AccumTexture.GetView(),
+                                                         .Load = Rhi::LoadOp::Clear,
+                                                         .ClearColor = {0.f, 0.f, 0.f, 0.f}},
+                                       Rhi::RenderTarget{.View = frame.RevealageTexture.GetView(),
+                                                         .Load = Rhi::LoadOp::Clear,
+                                                         .ClearColor = {1.f, 0.f, 0.f, 0.f}}};
 
-        vk::RenderingInfo renderingInfo = {
-            .renderArea = {.offset = {0, 0}, .extent = SwapchainExtent()},
-            .layerCount = 1,
-            .colorAttachmentCount = static_cast<uint32_t>(colorAttachmentInfos.size()),
-            .pColorAttachments = colorAttachmentInfos.data(),
-            .pDepthAttachment = &depthAttachmentInfo};
+        // Read, not written: the pass tests against the opaque depth and samples
+        // it, so neither backend may bind it writable while it is sampled.
+        const Rhi::DepthStencilTarget depthTarget{
+            .View = frame.DepthTexture.GetView(), .Load = Rhi::LoadOp::Preserve, .bReadOnly = true};
 
-        cmd.beginRendering(renderingInfo);
+        list->BeginRendering(Rhi::RenderingDesc{.RenderArea = WholeTarget(),
+                                                .RenderTargets = renderTargets,
+                                                .pDepthStencil = &depthTarget});
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_TransparentPipeline);
 
-        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(SwapchainExtent().width),
-                                        static_cast<float>(SwapchainExtent().height), 0.f, 1.f));
-        cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), SwapchainExtent()));
+        list->SetViewport(FullViewport());
+        list->SetScissor(WholeTarget());
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_TransparentPipelineLayout, 0,
                                *frame.GlobalBufferDescriptorSet, nullptr);
 
@@ -1464,7 +1448,7 @@ private:
         m_TransparentBatchCount = static_cast<uint32_t>(batches.size());
         m_TransparentInstanceCount = instanceCount;
 
-        cmd.endRendering();
+        list->EndRendering();
 
         list->End();
     }
@@ -1482,26 +1466,15 @@ private:
                 frame.RevealageTexture.GetHandle())};
         m_MainThreadBarrierCounts += list->Barrier(openingBarriers);
 
-        vk::ClearValue clearColor = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
-        vk::RenderingAttachmentInfo colorAttachmentInfo = {
-            .imageView = NativeView(image.View),
-            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .loadOp = vk::AttachmentLoadOp::eClear,
-            .storeOp = vk::AttachmentStoreOp::eStore,
-            .clearValue = clearColor};
+        const std::array renderTargets{Rhi::RenderTarget{
+            .View = image.View, .Load = Rhi::LoadOp::Clear, .ClearColor = {0.f, 0.f, 0.f, 1.f}}};
 
-        vk::RenderingInfo renderingInfo = {
-            .renderArea = {.offset = {0, 0}, .extent = SwapchainExtent()},
-            .layerCount = 1,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &colorAttachmentInfo};
-
-        cmd.beginRendering(renderingInfo);
+        list->BeginRendering(
+            Rhi::RenderingDesc{.RenderArea = WholeTarget(), .RenderTargets = renderTargets});
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_CompositePipeline);
 
-        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(SwapchainExtent().width),
-                                        static_cast<float>(SwapchainExtent().height), 0.f, 1.f));
-        cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), SwapchainExtent()));
+        list->SetViewport(FullViewport());
+        list->SetScissor(WholeTarget());
 
         std::array descriptorSets = {*frame.GlobalBufferDescriptorSet,
                                      *frame.CompositeDescriptorSet};
@@ -1516,7 +1489,7 @@ private:
         constexpr uint32_t QUAD_INDEX_COUNT = 6u;
         cmd.drawIndexed(QUAD_INDEX_COUNT, 1u, 0u, 0, 0u);
 
-        cmd.endRendering();
+        list->EndRendering();
 
         list->End();
     }
@@ -1524,26 +1497,16 @@ private:
     void RecordImGui(const Rhi::AcquiredImage& image)
     {
         Rhi::ICommandList* list = &BeginRecording(m_Frames[m_FrameIndex].ImGuiCommands);
-        const vk::CommandBuffer cmd = Rhi::Vulkan::GetNative(*list);
 
         // ImGui draws over the composited frame with loadOp eLoad, so the
         // composite pass's writes have to be visible to this pass's load.
         m_MainThreadBarrierCounts +=
             list->Barrier(Rhi::BarrierPresets::PreserveRenderTarget().On(image.Texture));
 
-        vk::RenderingAttachmentInfo colorAttachmentInfo = {
-            .imageView = NativeView(image.View),
-            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .loadOp = vk::AttachmentLoadOp::eLoad,
-            .storeOp = vk::AttachmentStoreOp::eStore};
+        const std::array renderTargets{Rhi::RenderTarget{.View = image.View}};
 
-        vk::RenderingInfo renderingInfo = {
-            .renderArea = {.offset = {0, 0}, .extent = SwapchainExtent()},
-            .layerCount = 1,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &colorAttachmentInfo};
-
-        cmd.beginRendering(renderingInfo);
+        list->BeginRendering(
+            Rhi::RenderingDesc{.RenderArea = WholeTarget(), .RenderTargets = renderTargets});
 
         // The pass itself still records: its barrier and its render pass are what
         // a frame costs whether or not the panel is drawn, so suppressing the
@@ -1551,7 +1514,7 @@ private:
         if (m_bCursorVisible && !m_Spec.bNoUi)
             m_pUiBackend->Render(*list);
 
-        cmd.endRendering();
+        list->EndRendering();
         list->End();
     }
 

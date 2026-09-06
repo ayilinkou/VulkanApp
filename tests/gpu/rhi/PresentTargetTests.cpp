@@ -14,7 +14,6 @@
 #include <rhi/IDevice.h>
 #include <rhi/IPresentTarget.h>
 #include <rhi/RhiTypes.h>
-#include <rhi/vulkan/VulkanNative.h>
 
 #include "vulkan/OffscreenTarget.h"
 
@@ -98,12 +97,12 @@ FrameCommands MakeFrameCommands(IDevice& device)
 struct ClearRect
 {
     std::array<float, 4> Color{};
-    vk::Rect2D Area{};
+    Rect2D Area{};
 };
 
-vk::Rect2D WholeImage(Extent2D extent)
+Rect2D WholeImage(Extent2D extent)
 {
-    return vk::Rect2D{.offset = {0, 0}, .extent = vk::Extent2D{extent.Width, extent.Height}};
+    return Rect2D{.Extent = extent};
 }
 
 /**
@@ -117,10 +116,9 @@ vk::Rect2D WholeImage(Extent2D extent)
  * ShaderResource is the finished state that matches the target's Sampled usage,
  * and the layout the readbacks below hand to ReadRenderedTexture.
  */
-void RecordClears(IDevice& device, vk::CommandBuffer cmd, const AcquiredImage& acquired,
+void RecordClears(ICommandList* list, const AcquiredImage& acquired,
                   std::span<const ClearRect> clears)
 {
-    const std::unique_ptr<ICommandList> list = Vulkan::WrapCommandList(device, cmd);
     list->Begin();
     list->Barrier(BarrierPresets::AcquiredImageToRenderTarget().On(acquired.Texture));
 
@@ -138,34 +136,24 @@ void RecordClears(IDevice& device, vk::CommandBuffer cmd, const AcquiredImage& a
             list->Barrier(betweenPasses.On(acquired.Texture));
         }
 
-        const std::array<float, 4>& color = clears[i].Color;
-        const vk::ClearValue clearValue =
-            vk::ClearColorValue(color[0], color[1], color[2], color[3]);
-        const vk::RenderingAttachmentInfo colorAttachment{
-            .imageView = Vulkan::GetImageView(device, acquired.View),
-            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .loadOp = vk::AttachmentLoadOp::eClear,
-            .storeOp = vk::AttachmentStoreOp::eStore,
-            .clearValue = clearValue};
+        // A rendering scope whose only content is the clear the load op performs.
+        const std::array renderTargets{RenderTarget{
+            .View = acquired.View, .Load = LoadOp::Clear, .ClearColor = clears[i].Color}};
 
-        const vk::RenderingInfo renderingInfo{.renderArea = clears[i].Area,
-                                              .layerCount = 1u,
-                                              .colorAttachmentCount = 1u,
-                                              .pColorAttachments = &colorAttachment};
-
-        cmd.beginRendering(renderingInfo);
-        cmd.endRendering();
+        list->BeginRendering(
+            RenderingDesc{.RenderArea = clears[i].Area, .RenderTargets = renderTargets});
+        list->EndRendering();
     }
 
     list->Barrier(BarrierPresets::RenderTargetToShaderResource().On(acquired.Texture));
     list->End();
 }
 
-void RecordClearFrame(IDevice& device, vk::CommandBuffer cmd, const AcquiredImage& acquired,
+void RecordClearFrame(ICommandList* list, const AcquiredImage& acquired,
                       const std::array<float, 4>& color, Extent2D extent)
 {
     const std::array clears{ClearRect{.Color = color, .Area = WholeImage(extent)}};
-    RecordClears(device, cmd, acquired, clears);
+    RecordClears(list, acquired, clears);
 }
 
 /**
@@ -306,7 +294,7 @@ TEST_CASE("Three overlapping frames render into an offscreen target", "[rhi][gpu
 
         imagesByIndex[acquired.Index] = acquired.Texture;
 
-        RecordClearFrame(device, Vulkan::GetNative(*frames[frame].List), acquired, kFrameColors[frame], kExtent);
+        RecordClearFrame(frames[frame].List, acquired, kFrameColors[frame], kExtent);
         SubmitFrame(device, *frames[frame].List, acquired.WaitSemaphores,
                     target->GetRenderCompleteSemaphore(acquired.Index));
 
@@ -366,7 +354,7 @@ TEST_CASE("Recreating an offscreen target resizes it", "[rhi][gpu][present]")
     {
         const FrameCommands frame = MakeFrameCommands(device);
         const AcquiredImage acquired = target->Acquire();
-        RecordClearFrame(device, Vulkan::GetNative(*frame.List), acquired, kFrameColors[0], kExtent);
+        RecordClearFrame(frame.List, acquired, kFrameColors[0], kExtent);
         SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                     target->GetRenderCompleteSemaphore(acquired.Index));
         CHECK(target->Present(acquired.Index));
@@ -384,7 +372,7 @@ TEST_CASE("Recreating an offscreen target resizes it", "[rhi][gpu][present]")
     CHECK(acquired.WaitSemaphores.empty());
 
     const FrameCommands frame = MakeFrameCommands(device);
-    RecordClearFrame(device, Vulkan::GetNative(*frame.List), acquired, kFrameColors[1], kSmaller);
+    RecordClearFrame(frame.List, acquired, kFrameColors[1], kSmaller);
     SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                 target->GetRenderCompleteSemaphore(acquired.Index));
     CHECK(target->Present(acquired.Index));
@@ -472,7 +460,7 @@ TEST_CASE("Readback returns the exact pixels of a solid clear", "[rhi][gpu][pres
 
     const FrameCommands frame = MakeFrameCommands(device);
     const AcquiredImage acquired = target->Acquire();
-    RecordClearFrame(device, Vulkan::GetNative(*frame.List), acquired, kColor, kExtent);
+    RecordClearFrame(frame.List, acquired, kColor, kExtent);
     SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                 target->GetRenderCompleteSemaphore(acquired.Index));
     REQUIRE(target->Present(acquired.Index));
@@ -527,13 +515,12 @@ TEST_CASE("Readback packs a non-square, non-power-of-two extent tightly", "[rhi]
     const std::array clears{
         ClearRect{.Color = kBackground, .Area = WholeImage(kExtent)},
         ClearRect{.Color = kCorner,
-                  .Area = vk::Rect2D{.offset = {0, 0},
-                                     .extent = vk::Extent2D{kCornerWidth, kCornerHeight}}},
+                  .Area = Rect2D{.Extent = {kCornerWidth, kCornerHeight}}},
     };
 
     const FrameCommands frame = MakeFrameCommands(device);
     const AcquiredImage acquired = target->Acquire();
-    RecordClears(device, Vulkan::GetNative(*frame.List), acquired, clears);
+    RecordClears(frame.List, acquired, clears);
     SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                 target->GetRenderCompleteSemaphore(acquired.Index));
     REQUIRE(target->Present(acquired.Index));
@@ -592,7 +579,7 @@ TEST_CASE("Readback leaves nothing behind on the device", "[rhi][gpu][present]")
     {
         const FrameCommands frame = MakeFrameCommands(device);
         const AcquiredImage acquired = target->Acquire();
-        RecordClearFrame(device, Vulkan::GetNative(*frame.List), acquired, kFrameColors[0], kExtent);
+        RecordClearFrame(frame.List, acquired, kFrameColors[0], kExtent);
         SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                     target->GetRenderCompleteSemaphore(acquired.Index));
         REQUIRE(target->Present(acquired.Index));

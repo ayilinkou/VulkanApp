@@ -9,6 +9,7 @@
 #include <rhi/Barrier.h>
 #include <rhi/BufferDesc.h>
 #include <rhi/Diagnostics.h>
+#include <rhi/Rendering.h>
 #include <rhi/RhiTypes.h>
 #include <rhi/SamplerDesc.h>
 #include <rhi/TextureDesc.h>
@@ -50,6 +51,16 @@
  */
 namespace Hikari::Rhi::Vulkan
 {
+/**
+ * Neutral load and store ops to Vulkan's.
+ *
+ * Switches without a default so that a new enumerator fails the build here
+ * rather than silently mapping to whatever came first (plan D11's ratchet,
+ * applied to the same problem).
+ */
+vk::AttachmentLoadOp ToVkLoadOp(LoadOp op);
+vk::AttachmentStoreOp ToVkStoreOp(StoreOp op);
+
 /**
  * VMA splits "where the memory lives" across a usage enum and a set of
  * allocation flags, so a neutral MemoryAccess converts to a pair rather than to

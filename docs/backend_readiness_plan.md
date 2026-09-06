@@ -627,9 +627,24 @@ applies to every step here without anything being switched on first.
 - **Do:** a neutral attachment description (view handle, load/store op, clear value),
   `BeginRendering`/`EndRendering`, `SetViewport`, `SetScissor` on `ICommandList` (D17). Nothing
   here depends on the binding model, which is why it precedes the bind groups.
+- **Retires:** `tests/gpu/rhi/PresentTargetTests.cpp`'s `VulkanNative.h` entry, deferred here
+  from step 2. Its clears were a raw render pass and its attachment took a `VkImageView`; both
+  are neutral now, and the file reaches only for `OffscreenTarget` through the module's own
+  sources. 17 sites down to 16.
 - **Verify:** baseline unchanged. The recorders still bind pipelines and draw through the escape
   hatch; only the scope and dynamic state have moved.
 - **Size:** M
+- **Done.** `LoadOp` and `StoreOp` are named for D3D12's beginning- and ending-access types
+  under D13 — `Preserve`/`Clear`/`Discard` rather than Vulkan's load/store vocabulary.
+  `StoreOp` has exactly two values, and that is a correction: it briefly had a third,
+  `NoAccess`, for the transparent pass reading depth it never writes. That was wrong twice
+  over. D3D12's `NO_ACCESS` means the resource is **neither read nor written** and must be
+  paired with a `NO_ACCESS` beginning access, so it describes the one case a depth-reading pass
+  is not; and the fact it was trying to state is already stated by
+  `DepthStencilTarget::bReadOnly`, so keeping both would be two fields able to disagree. The
+  backend derives Vulkan's `STORE_OP_NONE` and the read-only layout from `bReadOnly`, and
+  rejects a read-only target that asks to discard. The ImGui recorder came out fully neutral as
+  a side effect: everything raw it did was open and close a scope.
 
 ### 4 — Bind groups: global, depth and composite
 

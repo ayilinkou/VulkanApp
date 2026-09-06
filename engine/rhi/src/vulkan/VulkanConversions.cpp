@@ -6,6 +6,34 @@
 
 namespace Hikari::Rhi::Vulkan
 {
+vk::AttachmentLoadOp ToVkLoadOp(LoadOp op)
+{
+    switch (op)
+    {
+        case LoadOp::Preserve:
+            return vk::AttachmentLoadOp::eLoad;
+        case LoadOp::Clear:
+            return vk::AttachmentLoadOp::eClear;
+        case LoadOp::Discard:
+            return vk::AttachmentLoadOp::eDontCare;
+    }
+
+    throw std::runtime_error("Rhi::Vulkan::ToVkLoadOp: unmapped LoadOp.");
+}
+
+vk::AttachmentStoreOp ToVkStoreOp(StoreOp op)
+{
+    switch (op)
+    {
+        case StoreOp::Preserve:
+            return vk::AttachmentStoreOp::eStore;
+        case StoreOp::Discard:
+            return vk::AttachmentStoreOp::eDontCare;
+    }
+
+    throw std::runtime_error("Rhi::Vulkan::ToVkStoreOp: unmapped StoreOp.");
+}
+
 namespace
 {
 /**

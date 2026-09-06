@@ -221,7 +221,6 @@ set(transitional_allowlist
     "engine/engine/src/PBRMaterial.cpp|DebugNames.h|Names the material descriptor set (step 5)"
     "tests/unit/rhi/SwapchainUtilTests.cpp|SwapchainUtil.h|Surface states a real display cannot be put into on demand"
     "tests/gpu/rhi/DeviceTests.cpp|VulkanNative.h|The escape hatch is what these cases assert on"
-    "tests/gpu/rhi/PresentTargetTests.cpp|VulkanNative.h|Clears are recorded into a raw render pass and the attachment takes a VkImageView (step 3)"
 )
 
 # Splitting by hand rather than with file(STRINGS), which would turn every

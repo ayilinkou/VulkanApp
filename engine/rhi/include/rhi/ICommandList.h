@@ -6,6 +6,7 @@
 #include <core/Extent3D.h>
 #include <rhi/Barrier.h>
 #include <rhi/Handles.h>
+#include <rhi/Rendering.h>
 #include <rhi/RhiTypes.h>
 
 namespace Hikari::Rhi
@@ -96,6 +97,24 @@ public:
      * way it adds a batch rather than hard-coding numbers beside the call.
      */
     virtual BarrierCounts Barrier(const TextureBarrier& barrier) = 0;
+
+    /**
+     * Opens and closes a rendering scope. Draws are recorded between the two,
+     * and every attachment must already be in the layout rendering needs -- this
+     * transitions nothing, for the same reason the copies below do not.
+     *
+     * Scopes do not nest, and a list must close every scope it opens.
+     */
+    virtual void BeginRendering(const RenderingDesc& desc) = 0;
+    virtual void EndRendering() = 0;
+
+    /**
+     * Viewport and scissor are always dynamic. Both APIs set them on the command
+     * list rather than baking them into a pipeline, and a renderer that resizes
+     * would otherwise rebuild every pipeline to change a number.
+     */
+    virtual void SetViewport(const Viewport& viewport) = 0;
+    virtual void SetScissor(const Rect2D& rect) = 0;
 
     /**
      * Copies must be issued between barriers that put both resources in the

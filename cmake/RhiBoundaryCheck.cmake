@@ -131,10 +131,9 @@ set(transitional_headers
     # The escape hatch itself (D9): instance/device/queue for ImGui, and the
     # VkFormat/VkPipelineCache accessors the app's pipeline creation needs.
     "VulkanNative.h"
-    # Pipeline creation stays Vulkan-side until the binding model is neutral.
-    # D8 deferred this; D15 un-defers it now that D14 neutralises binding.
-    # Removed by Stage 7.5 steps 6 (graphics) and 7 (compute).
-    "PipelineBuilder.h"
+    # Compute pipeline creation stays Vulkan-side until CloudSystem's own bind
+    # groups are neutral, which is what its pipeline layout is built from.
+    # Removed by Stage 7.5 step 7; the graphics builder went at step 6.
     "ComputePipelineBuilder.h"
     # Names Vulkan objects the application still creates for itself. Shrinks as
     # those move behind the RHI; it is a template, so it cannot move to src/.
@@ -202,7 +201,6 @@ endforeach()
 
 set(transitional_allowlist
     "engine/editor/src/VulkanUiBackend.cpp|VulkanNative.h|ImGui's backend takes instance/device/queue and a VkCommandBuffer by value (D9)"
-    "engine/engine/src/Engine.cpp|PipelineBuilder.h|Graphics pipeline creation is Vulkan-side until D15 (step 6)"
     "engine/engine/src/Engine.cpp|VulkanNative.h|The frame loop still records raw draws — last use goes at step 10"
     "engine/engine/src/Engine.cpp|DebugNames.h|Names the pools, sets and sync objects the engine still owns (step 12)"
     "engine/engine/src/CloudSystem.cpp|VulkanNative.h|Raw dispatch recording needs the device — goes at step 11"

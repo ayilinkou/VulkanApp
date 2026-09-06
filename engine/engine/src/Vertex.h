@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 
-#include "vulkan/vulkan.hpp"
+#include <rhi/Pipeline.h>
 
 #include "glm/glm.hpp"
 #include "glm/gtx/hash.hpp"
@@ -17,30 +17,30 @@ struct Vertex
 
     static constexpr uint32_t AttributeCount = 4;
 
-    static constexpr vk::VertexInputBindingDescription GetBindingDescription()
+    static constexpr Hikari::Rhi::VertexBufferLayout GetBindingDescription()
     {
-        return {.binding = 0, .stride = sizeof(Vertex), .inputRate = vk::VertexInputRate::eVertex};
+        return {.Slot = 0, .Stride = sizeof(Vertex), .Rate = Hikari::Rhi::VertexInputRate::Vertex};
     }
 
-    static constexpr std::array<vk::VertexInputAttributeDescription, AttributeCount>
+    static constexpr std::array<Hikari::Rhi::VertexAttribute, AttributeCount>
     GetAttributeDescriptions()
     {
-        return {{{.location = 0,
-                  .binding = 0,
-                  .format = vk::Format::eR32G32B32Sfloat,
-                  .offset = offsetof(Vertex, Pos)},
-                 {.location = 1,
-                  .binding = 0,
-                  .format = vk::Format::eR32G32Sfloat,
-                  .offset = offsetof(Vertex, TexCoord)},
-                 {.location = 2,
-                  .binding = 0,
-                  .format = vk::Format::eR32G32B32Sfloat,
-                  .offset = offsetof(Vertex, Normal)},
-                 {.location = 3,
-                  .binding = 0,
-                  .format = vk::Format::eR32G32B32A32Sfloat,
-                  .offset = offsetof(Vertex, Tangent)}}};
+        return {{{.Location = 0,
+                  .Slot = 0,
+                  .AttributeFormat = Hikari::Rhi::Format::RGB32Float,
+                  .Offset = offsetof(Vertex, Pos)},
+                 {.Location = 1,
+                  .Slot = 0,
+                  .AttributeFormat = Hikari::Rhi::Format::RG32Float,
+                  .Offset = offsetof(Vertex, TexCoord)},
+                 {.Location = 2,
+                  .Slot = 0,
+                  .AttributeFormat = Hikari::Rhi::Format::RGB32Float,
+                  .Offset = offsetof(Vertex, Normal)},
+                 {.Location = 3,
+                  .Slot = 0,
+                  .AttributeFormat = Hikari::Rhi::Format::RGBA32Float,
+                  .Offset = offsetof(Vertex, Tangent)}}};
     }
 
     constexpr bool operator==(const Vertex& other) const
@@ -57,23 +57,23 @@ struct QuadVertex
 
     static constexpr uint32_t AttributeCount = 2u;
 
-    static constexpr vk::VertexInputBindingDescription GetBindingDescription()
+    static constexpr Hikari::Rhi::VertexBufferLayout GetBindingDescription()
     {
         return {
-            .binding = 0, .stride = sizeof(QuadVertex), .inputRate = vk::VertexInputRate::eVertex};
+            .Slot = 0, .Stride = sizeof(QuadVertex), .Rate = Hikari::Rhi::VertexInputRate::Vertex};
     }
 
-    static constexpr std::array<vk::VertexInputAttributeDescription, AttributeCount>
+    static constexpr std::array<Hikari::Rhi::VertexAttribute, AttributeCount>
     GetAttributeDescription()
     {
-        return {{{.location = 0,
-                  .binding = 0,
-                  .format = vk::Format::eR32G32Sfloat,
-                  .offset = offsetof(QuadVertex, Pos)},
-                 {.location = 1,
-                  .binding = 0,
-                  .format = vk::Format::eR32G32Sfloat,
-                  .offset = offsetof(QuadVertex, TexCoord)}}};
+        return {{{.Location = 0,
+                  .Slot = 0,
+                  .AttributeFormat = Hikari::Rhi::Format::RG32Float,
+                  .Offset = offsetof(QuadVertex, Pos)},
+                 {.Location = 1,
+                  .Slot = 0,
+                  .AttributeFormat = Hikari::Rhi::Format::RG32Float,
+                  .Offset = offsetof(QuadVertex, TexCoord)}}};
     }
 };
 

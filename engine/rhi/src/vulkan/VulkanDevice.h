@@ -29,6 +29,7 @@
 #include "vulkan/VulkanBindGroup.h"
 #include "vulkan/VulkanBuffer.h"
 #include "vulkan/VulkanFence.h"
+#include "vulkan/VulkanPipeline.h"
 #include "vulkan/VulkanSampler.h"
 #include "vulkan/VulkanSemaphore.h"
 #include "vulkan/VulkanTexture.h"
@@ -78,6 +79,18 @@ public:
     /** The set a handle names, for the transitional binding path. */
     vk::DescriptorSet GetDescriptorSet(BindGroupHandle handle) const;
     vk::DescriptorSetLayout GetDescriptorSetLayout(BindGroupLayoutHandle handle) const;
+
+    PipelineLayoutHandle CreatePipelineLayout(const PipelineLayoutDesc& desc) override;
+    void Destroy(PipelineLayoutHandle handle) override;
+    ShaderModuleHandle CreateShaderModule(const ShaderModuleDesc& desc) override;
+    void Destroy(ShaderModuleHandle handle) override;
+    GraphicsPipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc& desc,
+                                                  IPipelineCache& cache) override;
+    void Destroy(GraphicsPipelineHandle handle) override;
+
+    /** Raw objects for the transitional recording path. */
+    vk::PipelineLayout GetPipelineLayout(PipelineLayoutHandle handle) const;
+    vk::Pipeline GetPipeline(GraphicsPipelineHandle handle) const;
 
     FenceHandle CreateFence(const FenceDesc& desc) override;
     void Destroy(FenceHandle handle) override;
@@ -296,6 +309,9 @@ private:
      */
     std::unique_ptr<DescriptorAllocator> m_BindGroupAllocator;
     Core::HandlePool<VulkanBindGroup, BindGroupTag> m_BindGroups;
+    Core::HandlePool<VulkanPipelineLayout, PipelineLayoutTag> m_PipelineLayouts;
+    Core::HandlePool<VulkanShaderModule, ShaderModuleTag> m_ShaderModules;
+    Core::HandlePool<VulkanGraphicsPipeline, GraphicsPipelineTag> m_GraphicsPipelines;
 
     QueueFamilies m_QueueFamilies;
 

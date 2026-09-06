@@ -59,7 +59,6 @@
 #include <rhi/UniqueHandle.h>
 #include <rhi/UploadContext.h>
 #include <rhi/vulkan/DebugNames.h>
-#include <rhi/vulkan/PipelineBuilder.h>
 #include <rhi/vulkan/VulkanNative.h>
 
 #include <SDL3/SDL.h>
@@ -1045,147 +1044,156 @@ private:
         ImGui::Render();
     }
 
-    [[nodiscard]] vk::raii::ShaderModule
-    CreateShaderModule(const std::vector<char>& shaderCode) const
+    /**
+     * The compiled shader named `name`, as a module the device owns.
+     *
+     * The engine resolves the file and the device says which kind it can read
+     * (plan D24): resolving a name to a path is a content question, and the RHI
+     * has no business owning a filesystem. Modules are kept alive for the run
+     * because a pipeline may be rebuilt on resize.
+     */
+    Rhi::ShaderModuleHandle LoadShader(const std::string& name)
     {
-        vk::ShaderModuleCreateInfo createInfo{
-            .codeSize = shaderCode.size() * sizeof(char),
-            .pCode = reinterpret_cast<const uint32_t*>(shaderCode.data())};
-        vk::raii::ShaderModule shaderModule(m_Device, createInfo);
+        const std::string file = std::format("{}.{}", name, m_RhiDevice->GetCaps().ShaderExtension);
+        const std::vector<char> code = Platform::ReadFile(m_Paths.Shader(file).string());
 
-        return shaderModule;
+        m_ShaderModules.push_back(Rhi::UniqueHandle<Rhi::ShaderModuleHandle>(
+            *m_RhiDevice, m_RhiDevice->CreateShaderModule(Rhi::ShaderModuleDesc{
+                              .Bytes = std::as_bytes(std::span(code)), .DebugName = file})));
+
+        return m_ShaderModules.back().Get();
+    }
+
+    /** Vertex plus instance streams, which every surface pipeline uses. */
+    static constexpr std::array kSurfaceVertexBuffers{Vertex::GetBindingDescription(),
+                                                      InstanceData::GetBindingDescription()};
+
+    static constexpr auto SurfaceVertexAttributes()
+    {
+        std::array<Rhi::VertexAttribute, Vertex::AttributeCount + InstanceData::AttributeCount>
+            attributes{};
+        const auto vertexAttributes = Vertex::GetAttributeDescriptions();
+        const auto instanceAttributes = InstanceData::GetAttributeDescriptions();
+        std::ranges::copy(vertexAttributes, attributes.begin());
+        std::ranges::copy(instanceAttributes, attributes.begin() + Vertex::AttributeCount);
+        return attributes;
     }
 
     void CreateOpaquePipeline()
     {
-        auto vertexBindingDesc = Vertex::GetBindingDescription();
-        auto vertexAttributeDesc = Vertex::GetAttributeDescriptions();
-        auto instanceBindingDesc = InstanceData::GetBindingDescription();
-        auto instanceAttributeDesc = InstanceData::GetAttributeDescriptions();
+        static constexpr auto kAttributes = SurfaceVertexAttributes();
 
-        std::array<vk::VertexInputBindingDescription, 2> bindingDescs = {vertexBindingDesc,
-                                                                         instanceBindingDesc};
-        std::array<vk::VertexInputAttributeDescription,
-                   Vertex::AttributeCount + InstanceData::AttributeCount>
-            attributeDescs;
-        std::ranges::copy(vertexAttributeDesc, attributeDescs.begin());
-        std::ranges::copy(instanceAttributeDesc, attributeDescs.begin() + Vertex::AttributeCount);
+        const std::array bindGroupLayouts{m_GlobalLayout.Get(), m_MaterialFactory->GetLayout()};
+        const std::array pushRanges{Rhi::PushConstantRange{
+            .Stages = Rhi::ShaderStage::Pixel, .Size = sizeof(PBRMaterial::MaterialData)}};
 
-        vk::PipelineColorBlendAttachmentState attachmentState{
-            .blendEnable = vk::False,
-            .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                              vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
+        m_OpaquePipelineLayout = Rhi::UniqueHandle<Rhi::PipelineLayoutHandle>(
+            *m_RhiDevice, m_RhiDevice->CreatePipelineLayout(
+                              Rhi::PipelineLayoutDesc{.BindGroupLayouts = bindGroupLayouts,
+                                                      .PushConstantRanges = pushRanges,
+                                                      .DebugName = "Opaque Layout"}));
 
-        std::array setLayouts{NativeSetLayout(m_GlobalLayout.Get()),
-                              NativeSetLayout(m_MaterialFactory->GetLayout())};
+        const std::array formats{m_OpaqueImageFormat};
+        const std::array blends{Rhi::RenderTargetBlend{}};
 
-        vk::PushConstantRange pushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eFragment,
-                                                .size = sizeof(PBRMaterial::MaterialData)};
-
-        auto [opaqueLayout, opaquePipeline] =
-            PipelineBuilder(m_Device)
-                .Shaders(m_Paths.Shader("opaque.spv").string())
-                .VertexInput(bindingDescs, attributeDescs)
-                .Depth(true, true, vk::CompareOp::eLess)
-                .ColorAttachments(std::array{Rhi::Vulkan::GetNativeFormat(m_OpaqueImageFormat)},
-                                  std::array{attachmentState})
-                .DepthAttachment(Rhi::Vulkan::GetNativeFormat(m_DepthFormat))
-                .Cull(vk::CullModeFlagBits::eNone, true)
-                .Layout(setLayouts, std::array{pushConstantRange})
-                .DebugName("Opaque")
-                .Cache(*m_PipelineCache)
-                .Build();
-
-        m_OpaquePipelineLayout = std::move(opaqueLayout);
-        m_OpaquePipeline = std::move(opaquePipeline);
+        m_OpaquePipeline = Rhi::UniqueHandle<Rhi::GraphicsPipelineHandle>(
+            *m_RhiDevice,
+            m_RhiDevice->CreateGraphicsPipeline(
+                Rhi::GraphicsPipelineDesc{
+                    .Layout = m_OpaquePipelineLayout.Get(),
+                    .VertexShader = {LoadShader("opaque"), "vertMain"},
+                    .PixelShader = {m_ShaderModules.back().Get(), "fragMain"},
+                    .VertexBuffers = kSurfaceVertexBuffers,
+                    .VertexAttributes = kAttributes,
+                    .RenderTargetFormats = formats,
+                    .RenderTargetBlends = blends,
+                    .DepthFormat = m_DepthFormat,
+                    .Depth = {.bTest = true, .bWrite = true, .Compare = Rhi::CompareOp::Less},
+                    // Two-sided materials are a per-batch property, so the mode is
+                    // set per draw rather than baked in.
+                    .bDynamicCull = true,
+                    .DebugName = "Opaque"},
+                *m_PipelineCache));
     }
 
     void CreateTransparentPipeline()
     {
-        auto vertexBindingDesc = Vertex::GetBindingDescription();
-        auto vertexAttributeDesc = Vertex::GetAttributeDescriptions();
+        static constexpr auto kAttributes = SurfaceVertexAttributes();
 
-        auto instanceBindingDesc = InstanceData::GetBindingDescription();
-        auto instanceAttributeDesc = InstanceData::GetAttributeDescriptions();
+        const std::array bindGroupLayouts{m_GlobalLayout.Get(), m_MaterialFactory->GetLayout()};
+        const std::array pushRanges{Rhi::PushConstantRange{
+            .Stages = Rhi::ShaderStage::Pixel, .Size = sizeof(PBRMaterial::MaterialData)}};
 
-        std::array<vk::VertexInputBindingDescription, 2> bindingDescs = {vertexBindingDesc,
-                                                                         instanceBindingDesc};
-        std::array<vk::VertexInputAttributeDescription,
-                   Vertex::AttributeCount + InstanceData::AttributeCount>
-            attributeDescs;
-        std::ranges::copy(vertexAttributeDesc, attributeDescs.begin());
-        std::ranges::copy(instanceAttributeDesc, attributeDescs.begin() + Vertex::AttributeCount);
+        m_TransparentPipelineLayout = Rhi::UniqueHandle<Rhi::PipelineLayoutHandle>(
+            *m_RhiDevice, m_RhiDevice->CreatePipelineLayout(
+                              Rhi::PipelineLayoutDesc{.BindGroupLayouts = bindGroupLayouts,
+                                                      .PushConstantRanges = pushRanges,
+                                                      .DebugName = "Transparent Layout"}));
 
-        std::array<vk::Format, 2> attachmentFormats = {
-            Rhi::Vulkan::GetNativeFormat(m_AccumImageFormat),
-            Rhi::Vulkan::GetNativeFormat(m_RevealageImageFormat)};
+        const std::array formats{m_AccumImageFormat, m_RevealageImageFormat};
 
-        std::array<vk::PipelineColorBlendAttachmentState, 2> attachmentStates{
-            {{.blendEnable = vk::True,
-              .srcColorBlendFactor = vk::BlendFactor::eOne,
-              .dstColorBlendFactor = vk::BlendFactor::eOne,
-              .colorBlendOp = vk::BlendOp::eAdd,
-              .srcAlphaBlendFactor = vk::BlendFactor::eOne,
-              .dstAlphaBlendFactor = vk::BlendFactor::eOne,
-              .alphaBlendOp = vk::BlendOp::eAdd,
-              .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA},
-             {.blendEnable = vk::True,
-              .srcColorBlendFactor = vk::BlendFactor::eZero,
-              .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcColor,
-              .colorWriteMask = vk::ColorComponentFlagBits::eR}}};
+        // Weighted-blended OIT: the accumulation target sums contributions, and
+        // the revealage target multiplies what is left of the background through.
+        const std::array blends{
+            Rhi::RenderTargetBlend{.bEnable = true,
+                                   .SrcColor = Rhi::BlendFactor::One,
+                                   .DstColor = Rhi::BlendFactor::One,
+                                   .SrcAlpha = Rhi::BlendFactor::One,
+                                   .DstAlpha = Rhi::BlendFactor::One},
+            Rhi::RenderTargetBlend{.bEnable = true,
+                                   .SrcColor = Rhi::BlendFactor::Zero,
+                                   .DstColor = Rhi::BlendFactor::OneMinusSrcColor,
+                                   .SrcAlpha = Rhi::BlendFactor::Zero,
+                                   .DstAlpha = Rhi::BlendFactor::OneMinusSrcColor}};
 
-        std::array<vk::DescriptorSetLayout, 2> setLayouts = {
-            NativeSetLayout(m_GlobalLayout.Get()), NativeSetLayout(m_MaterialFactory->GetLayout())};
-
-        vk::PushConstantRange pushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eFragment,
-                                                .size = sizeof(PBRMaterial::MaterialData)};
-
-        auto [transparentLayout, transparentPipeline] =
-            PipelineBuilder(m_Device)
-                .Shaders(m_Paths.Shader("weightedBlendedOIT.spv").string())
-                .VertexInput(bindingDescs, attributeDescs)
-                .Depth(true, false, vk::CompareOp::eLess)
-                .ColorAttachments(attachmentFormats, attachmentStates)
-                .DepthAttachment(Rhi::Vulkan::GetNativeFormat(m_DepthFormat))
-                .Cull(vk::CullModeFlagBits::eNone)
-                .Layout(setLayouts, std::array{pushConstantRange})
-                .DebugName("Transparent")
-                .Cache(*m_PipelineCache)
-                .Build();
-
-        m_TransparentPipelineLayout = std::move(transparentLayout);
-        m_TransparentPipeline = std::move(transparentPipeline);
+        m_TransparentPipeline = Rhi::UniqueHandle<Rhi::GraphicsPipelineHandle>(
+            *m_RhiDevice,
+            m_RhiDevice->CreateGraphicsPipeline(
+                Rhi::GraphicsPipelineDesc{
+                    .Layout = m_TransparentPipelineLayout.Get(),
+                    .VertexShader = {LoadShader("weightedBlendedOIT"), "vertMain"},
+                    .PixelShader = {m_ShaderModules.back().Get(), "fragMain"},
+                    .VertexBuffers = kSurfaceVertexBuffers,
+                    .VertexAttributes = kAttributes,
+                    .RenderTargetFormats = formats,
+                    .RenderTargetBlends = blends,
+                    .DepthFormat = m_DepthFormat,
+                    // Tested against the opaque depth, never written to it.
+                    .Depth = {.bTest = true, .bWrite = false, .Compare = Rhi::CompareOp::Less},
+                    // Not dynamic, unlike the opaque pass: transparent surfaces
+                    // are drawn from both sides regardless of what the material
+                    // says, so there is nothing per batch to vary.
+                    .DebugName = "Transparent"},
+                *m_PipelineCache));
     }
 
     void CreateCompositePipeline()
     {
-        std::array bindingDescs = {QuadVertex::GetBindingDescription()};
-        std::array attributeDescs = {QuadVertex::GetAttributeDescription()};
+        static constexpr std::array kQuadBuffers{QuadVertex::GetBindingDescription()};
+        static constexpr auto kQuadAttributes = QuadVertex::GetAttributeDescription();
 
-        vk::PipelineColorBlendAttachmentState attachmentState{
-            .blendEnable = vk::False,
-            .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                              vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
+        const std::array bindGroupLayouts{m_GlobalLayout.Get(), m_CompositeLayout.Get()};
 
-        std::array<vk::DescriptorSetLayout, 2> setLayouts = {
-            NativeSetLayout(m_GlobalLayout.Get()), NativeSetLayout(m_CompositeLayout.Get())};
+        m_CompositePipelineLayout = Rhi::UniqueHandle<Rhi::PipelineLayoutHandle>(
+            *m_RhiDevice,
+            m_RhiDevice->CreatePipelineLayout(Rhi::PipelineLayoutDesc{
+                .BindGroupLayouts = bindGroupLayouts, .DebugName = "Composite Layout"}));
 
-        auto [compositeLayout, compositePipeline] =
-            PipelineBuilder(m_Device)
-                .Shaders(m_Paths.Shader("composite.spv").string())
-                .VertexInput(bindingDescs, attributeDescs)
-                .Depth(false, false, vk::CompareOp::eLess)
-                .ColorAttachments(std::array{SwapchainFormat()}, std::array{attachmentState})
-                .DepthAttachment(vk::Format::eUndefined)
-                .Cull(vk::CullModeFlagBits::eNone)
-                .Layout(setLayouts, {})
-                .DebugName("Composite")
-                .Cache(*m_PipelineCache)
-                .Build();
+        const std::array formats{m_PresentTarget->GetFormat()};
+        const std::array blends{Rhi::RenderTargetBlend{}};
 
-        m_CompositePipelineLayout = std::move(compositeLayout);
-        m_CompositePipeline = std::move(compositePipeline);
+        m_CompositePipeline = Rhi::UniqueHandle<Rhi::GraphicsPipelineHandle>(
+            *m_RhiDevice,
+            m_RhiDevice->CreateGraphicsPipeline(
+                Rhi::GraphicsPipelineDesc{.Layout = m_CompositePipelineLayout.Get(),
+                                          .VertexShader = {LoadShader("composite"), "vertMain"},
+                                          .PixelShader = {m_ShaderModules.back().Get(), "fragMain"},
+                                          .VertexBuffers = kQuadBuffers,
+                                          .VertexAttributes = kQuadAttributes,
+                                          .RenderTargetFormats = formats,
+                                          .RenderTargetBlends = blends,
+                                          .DebugName = "Composite"},
+                *m_PipelineCache));
     }
 
     void CreatePipelines()
@@ -1346,12 +1354,11 @@ private:
         list->BeginRendering(Rhi::RenderingDesc{.RenderArea = WholeTarget(),
                                                 .RenderTargets = renderTargets,
                                                 .pDepthStencil = &depthTarget});
-        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_OpaquePipeline);
+        list->SetPipeline(m_OpaquePipeline.Get());
 
         list->SetViewport(FullViewport());
         list->SetScissor(WholeTarget());
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_OpaquePipelineLayout, 0,
-                               NativeSet(frame.GlobalBindGroup.Get()), nullptr);
+        list->SetBindGroup(m_OpaquePipelineLayout.Get(), 0, frame.GlobalBindGroup.Get());
 
         cmd.bindVertexBuffers(1, Rhi::Vulkan::GetBuffer(*m_RhiDevice, frame.InstanceBuffer.Get()),
                               {0});
@@ -1374,11 +1381,11 @@ private:
             cmd.bindVertexBuffers(0, Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.VertexBuffer), {0});
             cmd.bindIndexBuffer(Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.IndexBuffer), 0,
                                 vk::IndexType::eUint32);
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_OpaquePipelineLayout, 1,
-                                   NativeSet(batch.pMaterial->GetBindGroup()), nullptr);
-            cmd.pushConstants<PBRMaterial::MaterialData>(
-                m_OpaquePipelineLayout, vk::ShaderStageFlagBits::eFragment, 0u,
-                *static_cast<PBRMaterial::MaterialData*>(batch.pMaterial->GetPushConstantData()));
+            list->SetBindGroup(m_OpaquePipelineLayout.Get(), 1, batch.pMaterial->GetBindGroup());
+            const auto& materialData = *static_cast<const PBRMaterial::MaterialData*>(
+                batch.pMaterial->GetPushConstantData());
+            list->PushConstants(m_OpaquePipelineLayout.Get(), Rhi::ShaderStage::Pixel, 0u,
+                                std::as_bytes(std::span(&materialData, 1)));
             cmd.drawIndexed(batch.IndexCount, batch.InstanceCount, batch.FirstIndex, 0,
                             batch.FirstInstance);
             instanceCount += batch.InstanceCount;
@@ -1432,12 +1439,11 @@ private:
         list->BeginRendering(Rhi::RenderingDesc{.RenderArea = WholeTarget(),
                                                 .RenderTargets = renderTargets,
                                                 .pDepthStencil = &depthTarget});
-        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_TransparentPipeline);
+        list->SetPipeline(m_TransparentPipeline.Get());
 
         list->SetViewport(FullViewport());
         list->SetScissor(WholeTarget());
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_TransparentPipelineLayout, 0,
-                               NativeSet(frame.GlobalBindGroup.Get()), nullptr);
+        list->SetBindGroup(m_TransparentPipelineLayout.Get(), 0, frame.GlobalBindGroup.Get());
 
         cmd.bindVertexBuffers(1, Rhi::Vulkan::GetBuffer(*m_RhiDevice, frame.InstanceBuffer.Get()),
                               {0});
@@ -1450,11 +1456,12 @@ private:
             cmd.bindVertexBuffers(0, Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.VertexBuffer), {0});
             cmd.bindIndexBuffer(Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.IndexBuffer), 0,
                                 vk::IndexType::eUint32);
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_TransparentPipelineLayout, 1,
-                                   NativeSet(batch.pMaterial->GetBindGroup()), nullptr);
-            cmd.pushConstants<PBRMaterial::MaterialData>(
-                m_TransparentPipelineLayout, vk::ShaderStageFlagBits::eFragment, 0u,
-                *static_cast<PBRMaterial::MaterialData*>(batch.pMaterial->GetPushConstantData()));
+            list->SetBindGroup(m_TransparentPipelineLayout.Get(), 1,
+                               batch.pMaterial->GetBindGroup());
+            const auto& materialData = *static_cast<const PBRMaterial::MaterialData*>(
+                batch.pMaterial->GetPushConstantData());
+            list->PushConstants(m_TransparentPipelineLayout.Get(), Rhi::ShaderStage::Pixel, 0u,
+                                std::as_bytes(std::span(&materialData, 1)));
             cmd.drawIndexed(batch.IndexCount, batch.InstanceCount, batch.FirstIndex, 0,
                             batch.FirstInstance);
             instanceCount += batch.InstanceCount;
@@ -1486,15 +1493,13 @@ private:
 
         list->BeginRendering(
             Rhi::RenderingDesc{.RenderArea = WholeTarget(), .RenderTargets = renderTargets});
-        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_CompositePipeline);
+        list->SetPipeline(m_CompositePipeline.Get());
 
         list->SetViewport(FullViewport());
         list->SetScissor(WholeTarget());
 
-        std::array descriptorSets = {NativeSet(frame.GlobalBindGroup.Get()),
-                                     NativeSet(frame.CompositeBindGroup.Get())};
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_CompositePipelineLayout, 0u,
-                               descriptorSets, nullptr);
+        list->SetBindGroup(m_CompositePipelineLayout.Get(), 0u, frame.GlobalBindGroup.Get());
+        list->SetBindGroup(m_CompositePipelineLayout.Get(), 1u, frame.CompositeBindGroup.Get());
 
         cmd.bindVertexBuffers(0u, Rhi::Vulkan::GetBuffer(*m_RhiDevice, m_QuadVertexBuffer.Get()),
                               {0});
@@ -2091,12 +2096,18 @@ private:
     uint32_t m_QueueIndex;
 
     std::unique_ptr<Rhi::IPresentTarget> m_PresentTarget;
-    vk::raii::PipelineLayout m_OpaquePipelineLayout = nullptr;
-    vk::raii::PipelineLayout m_TransparentPipelineLayout = nullptr;
-    vk::raii::PipelineLayout m_CompositePipelineLayout = nullptr;
-    vk::raii::Pipeline m_OpaquePipeline = nullptr;
-    vk::raii::Pipeline m_TransparentPipeline = nullptr;
-    vk::raii::Pipeline m_CompositePipeline = nullptr;
+    Rhi::UniqueHandle<Rhi::PipelineLayoutHandle> m_OpaquePipelineLayout;
+    Rhi::UniqueHandle<Rhi::PipelineLayoutHandle> m_TransparentPipelineLayout;
+    Rhi::UniqueHandle<Rhi::PipelineLayoutHandle> m_CompositePipelineLayout;
+    Rhi::UniqueHandle<Rhi::GraphicsPipelineHandle> m_OpaquePipeline;
+    Rhi::UniqueHandle<Rhi::GraphicsPipelineHandle> m_TransparentPipeline;
+    Rhi::UniqueHandle<Rhi::GraphicsPipelineHandle> m_CompositePipeline;
+
+    /**
+     * Kept for the run: a pipeline may be rebuilt when the swapchain format
+     * changes, and rebuilding it needs the modules it was made from.
+     */
+    std::vector<Rhi::UniqueHandle<Rhi::ShaderModuleHandle>> m_ShaderModules;
     vk::raii::CommandPool m_GenericCommandPool = nullptr;
     GlobalBuffer m_GlobalBuffer = {};
     Rhi::UniqueHandle<Rhi::SamplerHandle> m_TextureSampler;

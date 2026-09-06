@@ -759,6 +759,30 @@ applies to every step here without anything being switched on first.
 - **Verify:** baseline unchanged. The pipeline cache still warms — `startupMs` on a second run
   should not regress, which is the only externally visible sign the cache is still working.
 - **Size:** L
+- **Done.** Four notes.
+
+  **`SetPipeline`, `SetBindGroup` and `PushConstants` all landed here**, not at steps 8–11 as
+  written. Each takes a pipeline layout, so none of them could exist before `PipelineLayoutHandle`
+  did — and once it does, leaving those calls raw needs *more* escape-hatch accessors rather than
+  fewer. Steps 8–11 keep vertex and index binding, draws and dispatches, which is a cleaner split
+  by what is being recorded.
+
+  **`Rhi::Format` grew three vertex-attribute formats** — `RG32Float`, `RGB32Float`,
+  `RGBA32Float` — because vertex input needs them and both APIs carry vertex and texture formats
+  in one enum. That expired a unit test's specimen: `ConversionTests` asserted that
+  `eR32G32B32A32Sfloat` was outside the curated set, and its comment said the choice held only
+  "until pipeline creation is neutralized". It now names `eR8G8B8Unorm` instead, and the
+  mappings are spot-checked alongside the others.
+
+  **`DeviceCaps::ShaderExtension`** is how the engine learns which blob to load. The build still
+  emits one module per shader holding both entry points, so the pipeline description names the
+  same module twice with different entry points — legal on Vulkan, not on D3D12. **Splitting the
+  blobs per stage moved to Stage 7.6**, where DXIL emission restructures the shader build anyway;
+  doing it twice would mean touching `cmake/Shaders.cmake` for the same reason in two stages.
+
+  **`PipelineBuilder` is gone**, header and implementation: **5 transitional headers used from 9
+  sites**. `ComputePipelineBuilder` stays until step 7, and the two descriptor accessors stay
+  until steps 7 and 11, because `CloudSystem`'s own layouts are still raw.
 
 ### 7 — Compute pipelines
 

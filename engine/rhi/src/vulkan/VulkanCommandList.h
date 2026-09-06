@@ -33,6 +33,12 @@ public:
     void Begin() override;
     void End() override;
 
+    void SetPipeline(GraphicsPipelineHandle pipeline) override;
+    void SetBindGroup(PipelineLayoutHandle layout, uint32_t slot, BindGroupHandle group) override;
+
+    void PushConstants(PipelineLayoutHandle layout, ShaderStage stages, uint32_t offset,
+                       std::span<const std::byte> data) override;
+
     void BeginRendering(const RenderingDesc& desc) override;
     void EndRendering() override;
     void SetViewport(const Viewport& viewport) override;

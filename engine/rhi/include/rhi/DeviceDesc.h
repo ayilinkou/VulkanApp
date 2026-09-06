@@ -128,5 +128,15 @@ struct DeviceCaps
      */
     bool bHasDedicatedComputeQueue = false;
     bool bHasDedicatedCopyQueue = false;
+
+    /**
+     * The file extension of the compiled shader bytes this backend reads --
+     * "spv" here, "dxil" on D3D12.
+     *
+     * A string rather than an enum because the only thing anyone does with it is
+     * build a filename, and the build emits one blob per stage under a uniform
+     * name so that resolving it is the same on both backends (plan D24).
+     */
+    const char* ShaderExtension = "";
 };
 } // namespace Hikari::Rhi

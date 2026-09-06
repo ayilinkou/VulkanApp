@@ -1,11 +1,13 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
 #include <core/Extent3D.h>
 #include <rhi/Barrier.h>
 #include <rhi/Handles.h>
+#include <rhi/Pipeline.h>
 #include <rhi/Rendering.h>
 #include <rhi/RhiTypes.h>
 
@@ -107,6 +109,33 @@ public:
      */
     virtual void BeginRendering(const RenderingDesc& desc) = 0;
     virtual void EndRendering() = 0;
+
+    /**
+     * Binds the pipeline subsequent draws use, and the resources they read.
+     *
+     * SetBindGroup takes the layout as well as the group because that is what
+     * both APIs bind against -- a VkPipelineLayout, a root signature -- and
+     * because layout identity is what decides whether a bound group survives the
+     * next SetPipeline. Passing it explicitly keeps that visible instead of
+     * making it a consequence of call order.
+     */
+    virtual void SetPipeline(GraphicsPipelineHandle pipeline) = 0;
+    virtual void SetBindGroup(PipelineLayoutHandle layout, uint32_t slot,
+                              BindGroupHandle group) = 0;
+
+    /**
+     * Constants written straight into the command list.
+     *
+     * Takes the layout for the same reason SetBindGroup does: both APIs bind
+     * against it, and the range being pushed into was declared there. `stages`
+     * must name a range the layout actually declares.
+     *
+     * Bytes rather than a template, so the neutral interface stays free of the
+     * caller's struct -- the layout of that struct is the caller's contract with
+     * its shaders, not with the RHI.
+     */
+    virtual void PushConstants(PipelineLayoutHandle layout, ShaderStage stages, uint32_t offset,
+                               std::span<const std::byte> data) = 0;
 
     /**
      * Viewport and scissor are always dynamic. Both APIs set them on the command

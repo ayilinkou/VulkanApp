@@ -121,6 +121,15 @@ enum class Format : uint32_t
     BGRA8Unorm,
     RGBA16Float,
 
+    /**
+     * Vertex attribute formats. In the same enum as the texture formats because
+     * both APIs put them there -- one VkFormat, one DXGI_FORMAT -- and splitting
+     * them would invent a distinction neither backend can act on.
+     */
+    RG32Float,
+    RGB32Float,
+    RGBA32Float,
+
     D16Unorm,
     D32Float,
     D24UnormS8Uint,
@@ -128,9 +137,10 @@ enum class Format : uint32_t
 };
 
 inline constexpr std::array kAllFormats{
-    Format::Undefined,      Format::R8Unorm,        Format::RGBA8Unorm, Format::RGBA8Srgb,
-    Format::BGRA8Unorm,     Format::RGBA16Float,    Format::D16Unorm,   Format::D32Float,
-    Format::D24UnormS8Uint, Format::D32FloatS8Uint,
+    Format::Undefined,      Format::R8Unorm,     Format::RGBA8Unorm, Format::RGBA8Srgb,
+    Format::BGRA8Unorm,     Format::RGBA16Float, Format::RG32Float,  Format::RGB32Float,
+    Format::RGBA32Float,    Format::D16Unorm,    Format::D32Float,   Format::D24UnormS8Uint,
+    Format::D32FloatS8Uint,
 };
 
 /**
@@ -202,7 +212,14 @@ constexpr uint32_t BytesPerTexel(Format format)
             return 4u;
 
         case Format::RGBA16Float:
+        case Format::RG32Float:
             return 8u;
+
+        case Format::RGB32Float:
+            return 12u;
+
+        case Format::RGBA32Float:
+            return 16u;
     }
 
     return 0u;

@@ -63,6 +63,25 @@ VulkanCommandList::VulkanCommandList(VulkanDevice& device, vk::CommandBuffer cmd
 {
 }
 
+void VulkanCommandList::SetPipeline(GraphicsPipelineHandle pipeline)
+{
+    m_Cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_Device.GetPipeline(pipeline));
+}
+
+void VulkanCommandList::SetBindGroup(PipelineLayoutHandle layout, uint32_t slot,
+                                     BindGroupHandle group)
+{
+    m_Cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_Device.GetPipelineLayout(layout),
+                             slot, m_Device.GetDescriptorSet(group), nullptr);
+}
+
+void VulkanCommandList::PushConstants(PipelineLayoutHandle layout, ShaderStage stages,
+                                      uint32_t offset, std::span<const std::byte> data)
+{
+    m_Cmd.pushConstants(m_Device.GetPipelineLayout(layout), ToVk(stages), offset,
+                        static_cast<uint32_t>(data.size()), data.data());
+}
+
 void VulkanCommandList::BeginRendering(const RenderingDesc& desc)
 {
     // Fixed capacity rather than an allocation per pass: this runs several times

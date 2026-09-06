@@ -10,6 +10,7 @@
 #include <rhi/Handles.h>
 #include <rhi/ICommandAllocator.h>
 #include <rhi/IPresentTarget.h>
+#include <rhi/Pipeline.h>
 #include <rhi/PipelineCache.h>
 #include <rhi/SamplerDesc.h>
 #include <rhi/Submit.h>
@@ -198,6 +199,26 @@ public:
      * they have run -- a signalled fence is how a caller learns the latter.
      */
     virtual void Submit(const SubmitDesc& desc) = 0;
+
+    /**
+     * --- Pipeline layouts, shaders and pipelines ---
+     *
+     * A layout is created once and shared by every pipeline built to it, which
+     * is what makes bound groups survive a pipeline change on both APIs.
+     *
+     * Shader modules take bytes rather than a path: which file holds them is a
+     * content question, and DeviceCaps::ShaderFormat says which kind this
+     * backend can read (plan D24).
+     */
+    virtual PipelineLayoutHandle CreatePipelineLayout(const PipelineLayoutDesc& desc) = 0;
+    virtual void Destroy(PipelineLayoutHandle handle) = 0;
+
+    virtual ShaderModuleHandle CreateShaderModule(const ShaderModuleDesc& desc) = 0;
+    virtual void Destroy(ShaderModuleHandle handle) = 0;
+
+    virtual GraphicsPipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc& desc,
+                                                          IPipelineCache& cache) = 0;
+    virtual void Destroy(GraphicsPipelineHandle handle) = 0;
 
     /**
      * --- Pipelines ---

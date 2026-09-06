@@ -7,6 +7,7 @@
 #include "vulkan/vulkan.hpp"
 
 #include <rhi/Barrier.h>
+#include <rhi/BindGroup.h>
 #include <rhi/BufferDesc.h>
 #include <rhi/Diagnostics.h>
 #include <rhi/Rendering.h>
@@ -58,6 +59,13 @@ namespace Hikari::Rhi::Vulkan
  * rather than silently mapping to whatever came first (plan D11's ratchet,
  * applied to the same problem).
  */
+/**
+ * Neutral shader stages to Vulkan's. Throws on an empty set: a binding or a
+ * push constant range visible to no stage is a caller mistake rather than a
+ * degenerate case worth expressing.
+ */
+vk::ShaderStageFlags ToVk(ShaderStage stages);
+
 vk::AttachmentLoadOp ToVkLoadOp(LoadOp op);
 vk::AttachmentStoreOp ToVkStoreOp(StoreOp op);
 

@@ -103,6 +103,28 @@ public:
         return static_cast<uint32_t>(DestroyedBindGroups.size());
     }
 
+    PipelineLayoutHandle CreatePipelineLayout(const PipelineLayoutDesc&) override
+    {
+        return PipelineLayoutHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(PipelineLayoutHandle handle) override { DestroyedPipelineLayouts.push_back(handle); }
+
+    ShaderModuleHandle CreateShaderModule(const ShaderModuleDesc&) override
+    {
+        return ShaderModuleHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(ShaderModuleHandle handle) override { DestroyedShaderModules.push_back(handle); }
+
+    GraphicsPipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc&,
+                                                  IPipelineCache&) override
+    {
+        return GraphicsPipelineHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(GraphicsPipelineHandle handle) override { DestroyedPipelines.push_back(handle); }
+
     FenceHandle CreateFence(const FenceDesc&) override
     {
         return FenceHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
@@ -151,6 +173,9 @@ public:
     std::vector<FenceHandle> DestroyedFences;
     std::vector<BindGroupLayoutHandle> DestroyedLayouts;
     std::vector<BindGroupHandle> DestroyedBindGroups;
+    std::vector<PipelineLayoutHandle> DestroyedPipelineLayouts;
+    std::vector<ShaderModuleHandle> DestroyedShaderModules;
+    std::vector<GraphicsPipelineHandle> DestroyedPipelines;
 
 private:
     DeviceCaps m_Caps{};

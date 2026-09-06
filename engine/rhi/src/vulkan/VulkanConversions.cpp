@@ -6,6 +6,22 @@
 
 namespace Hikari::Rhi::Vulkan
 {
+vk::ShaderStageFlags ToVk(ShaderStage stages)
+{
+    vk::ShaderStageFlags result{};
+    if (Any(stages & ShaderStage::Vertex))
+        result |= vk::ShaderStageFlagBits::eVertex;
+    if (Any(stages & ShaderStage::Pixel))
+        result |= vk::ShaderStageFlagBits::eFragment;
+    if (Any(stages & ShaderStage::Compute))
+        result |= vk::ShaderStageFlagBits::eCompute;
+
+    if (!result)
+        throw std::runtime_error("Rhi::Vulkan::ToVk(ShaderStage): visible to no shader stage.");
+
+    return result;
+}
+
 vk::AttachmentLoadOp ToVkLoadOp(LoadOp op)
 {
     switch (op)
@@ -288,6 +304,12 @@ vk::Format ToVk(Format format)
             return vk::Format::eB8G8R8A8Unorm;
         case Format::RGBA16Float:
             return vk::Format::eR16G16B16A16Sfloat;
+        case Format::RG32Float:
+            return vk::Format::eR32G32Sfloat;
+        case Format::RGB32Float:
+            return vk::Format::eR32G32B32Sfloat;
+        case Format::RGBA32Float:
+            return vk::Format::eR32G32B32A32Sfloat;
         case Format::D16Unorm:
             return vk::Format::eD16Unorm;
         case Format::D32Float:

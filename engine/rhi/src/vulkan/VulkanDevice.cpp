@@ -23,6 +23,7 @@
 #include "vulkan/VulkanCommandAllocator.h"
 #include "vulkan/VulkanCommandList.h"
 #include "vulkan/VulkanConversions.h"
+#include "vulkan/VulkanPipeline.h"
 #include "vulkan/VulkanPipelineCache.h"
 #include "vulkan/VulkanUploadContext.h"
 
@@ -150,6 +151,7 @@ VulkanDevice::VulkanDevice(const DeviceDesc& desc)
     m_Caps.bPresentSupported = desc.Requirements.bPresent;
     m_Caps.bHasDedicatedComputeQueue = m_QueueFamilies.IsDedicated(QueueType::Compute);
     m_Caps.bHasDedicatedCopyQueue = m_QueueFamilies.IsDedicated(QueueType::Copy);
+    m_Caps.ShaderExtension = "spv";
 }
 
 VulkanDevice::~VulkanDevice()
@@ -556,21 +558,6 @@ vk::DescriptorType ToVkDescriptorType(BindingType type)
     throw std::runtime_error("Rhi::VulkanDevice: unmapped BindingType.");
 }
 
-vk::ShaderStageFlags ToVkShaderStages(ShaderStage stages)
-{
-    vk::ShaderStageFlags result{};
-    if ((stages & ShaderStage::Vertex) != ShaderStage::None)
-        result |= vk::ShaderStageFlagBits::eVertex;
-    if ((stages & ShaderStage::Pixel) != ShaderStage::None)
-        result |= vk::ShaderStageFlagBits::eFragment;
-    if ((stages & ShaderStage::Compute) != ShaderStage::None)
-        result |= vk::ShaderStageFlagBits::eCompute;
-
-    if (!result)
-        throw std::runtime_error("Rhi::VulkanDevice: a binding visible to no shader stage.");
-
-    return result;
-}
 } // namespace
 
 BindGroupLayoutHandle VulkanDevice::CreateBindGroupLayout(const BindGroupLayoutDesc& desc)
@@ -583,7 +570,7 @@ BindGroupLayoutHandle VulkanDevice::CreateBindGroupLayout(const BindGroupLayoutD
             vk::DescriptorSetLayoutBinding{.binding = binding.Slot,
                                            .descriptorType = ToVkDescriptorType(binding.Type),
                                            .descriptorCount = 1u,
-                                           .stageFlags = ToVkShaderStages(binding.Visibility)});
+                                           .stageFlags = ToVk(binding.Visibility)});
     }
 
     // Per-binding flags are chained only when something asks for them: an empty
@@ -724,6 +711,284 @@ vk::DescriptorSet VulkanDevice::GetDescriptorSet(BindGroupHandle handle) const
 {
     const VulkanBindGroup* pGroup = m_BindGroups.Get(handle);
     return pGroup ? *pGroup->Set : vk::DescriptorSet{};
+}
+
+namespace
+{
+vk::BlendFactor ToVkBlendFactor(BlendFactor factor)
+{
+    switch (factor)
+    {
+        case BlendFactor::Zero:
+            return vk::BlendFactor::eZero;
+        case BlendFactor::One:
+            return vk::BlendFactor::eOne;
+        case BlendFactor::OneMinusSrcColor:
+            return vk::BlendFactor::eOneMinusSrcColor;
+    }
+
+    throw std::runtime_error("Rhi::VulkanDevice: unmapped BlendFactor.");
+}
+
+vk::BlendOp ToVkBlendOp(BlendOp op)
+{
+    switch (op)
+    {
+        case BlendOp::Add:
+            return vk::BlendOp::eAdd;
+    }
+
+    throw std::runtime_error("Rhi::VulkanDevice: unmapped BlendOp.");
+}
+
+vk::CullModeFlags ToVkCullMode(CullMode mode)
+{
+    switch (mode)
+    {
+        case CullMode::None:
+            return vk::CullModeFlagBits::eNone;
+        case CullMode::Front:
+            return vk::CullModeFlagBits::eFront;
+        case CullMode::Back:
+            return vk::CullModeFlagBits::eBack;
+    }
+
+    throw std::runtime_error("Rhi::VulkanDevice: unmapped CullMode.");
+}
+} // namespace
+
+PipelineLayoutHandle VulkanDevice::CreatePipelineLayout(const PipelineLayoutDesc& desc)
+{
+    std::vector<vk::DescriptorSetLayout> setLayouts;
+    setLayouts.reserve(desc.BindGroupLayouts.size());
+    for (const BindGroupLayoutHandle handle : desc.BindGroupLayouts)
+        setLayouts.push_back(GetDescriptorSetLayout(handle));
+
+    std::vector<vk::PushConstantRange> ranges;
+    ranges.reserve(desc.PushConstantRanges.size());
+    for (const PushConstantRange& range : desc.PushConstantRanges)
+    {
+        ranges.push_back(vk::PushConstantRange{
+            .stageFlags = ToVk(range.Stages), .offset = range.Offset, .size = range.Size});
+    }
+
+    const vk::PipelineLayoutCreateInfo createInfo{
+        .setLayoutCount = static_cast<uint32_t>(setLayouts.size()),
+        .pSetLayouts = setLayouts.data(),
+        .pushConstantRangeCount = static_cast<uint32_t>(ranges.size()),
+        .pPushConstantRanges = ranges.data()};
+
+    VulkanPipelineLayout layout{vk::raii::PipelineLayout(m_Device, createInfo)};
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *layout.Layout, vk::ObjectType::ePipelineLayout,
+                       desc.DebugName.c_str());
+    }
+
+    return m_PipelineLayouts.Create(std::move(layout));
+}
+
+void VulkanDevice::Destroy(PipelineLayoutHandle handle)
+{
+    if (m_PipelineLayouts.Release(handle))
+        return;
+
+    ReportStaleHandle(std::format("Rhi::VulkanDevice::Destroy(PipelineLayoutHandle): handle "
+                                  "{:#010x} is stale or was never valid.",
+                                  handle.Value));
+}
+
+ShaderModuleHandle VulkanDevice::CreateShaderModule(const ShaderModuleDesc& desc)
+{
+    // SPIR-V is consumed as uint32_t, so the byte span has to be a whole number
+    // of words. A blob that is not is truncated rather than rejected by the
+    // driver, which fails much later and much less clearly.
+    if (desc.Bytes.empty() || desc.Bytes.size() % sizeof(uint32_t) != 0u)
+    {
+        throw std::runtime_error(
+            std::format("Rhi::IDevice::CreateShaderModule: '{}' is {} byte(s), which is not a "
+                        "whole number of SPIR-V words.",
+                        desc.DebugName, desc.Bytes.size()));
+    }
+
+    const vk::ShaderModuleCreateInfo createInfo{
+        .codeSize = desc.Bytes.size(),
+        .pCode = reinterpret_cast<const uint32_t*>(desc.Bytes.data())};
+
+    VulkanShaderModule module{vk::raii::ShaderModule(m_Device, createInfo)};
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *module.Module, vk::ObjectType::eShaderModule,
+                       desc.DebugName.c_str());
+    }
+
+    return m_ShaderModules.Create(std::move(module));
+}
+
+void VulkanDevice::Destroy(ShaderModuleHandle handle)
+{
+    if (m_ShaderModules.Release(handle))
+        return;
+
+    ReportStaleHandle(std::format("Rhi::VulkanDevice::Destroy(ShaderModuleHandle): handle "
+                                  "{:#010x} is stale or was never valid.",
+                                  handle.Value));
+}
+
+GraphicsPipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& desc,
+                                                            IPipelineCache& cache)
+{
+    const VulkanShaderModule* pVertex = m_ShaderModules.Get(desc.VertexShader.Module);
+    const VulkanShaderModule* pPixel = m_ShaderModules.Get(desc.PixelShader.Module);
+    if (pVertex == nullptr || pPixel == nullptr)
+    {
+        throw std::runtime_error(
+            std::format("Rhi::IDevice::CreateGraphicsPipeline: '{}' names a stale shader module.",
+                        desc.DebugName));
+    }
+
+    const std::array stages{
+        vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eVertex,
+                                          .module = *pVertex->Module,
+                                          .pName = desc.VertexShader.EntryPoint.c_str()},
+        vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eFragment,
+                                          .module = *pPixel->Module,
+                                          .pName = desc.PixelShader.EntryPoint.c_str()}};
+
+    std::vector<vk::VertexInputBindingDescription> bindings;
+    bindings.reserve(desc.VertexBuffers.size());
+    for (const VertexBufferLayout& buffer : desc.VertexBuffers)
+    {
+        bindings.push_back(vk::VertexInputBindingDescription{
+            .binding = buffer.Slot,
+            .stride = buffer.Stride,
+            .inputRate = buffer.Rate == VertexInputRate::Instance ? vk::VertexInputRate::eInstance
+                                                                  : vk::VertexInputRate::eVertex});
+    }
+
+    std::vector<vk::VertexInputAttributeDescription> attributes;
+    attributes.reserve(desc.VertexAttributes.size());
+    for (const VertexAttribute& attribute : desc.VertexAttributes)
+    {
+        attributes.push_back(
+            vk::VertexInputAttributeDescription{.location = attribute.Location,
+                                                .binding = attribute.Slot,
+                                                .format = ToVk(attribute.AttributeFormat),
+                                                .offset = attribute.Offset});
+    }
+
+    const vk::PipelineVertexInputStateCreateInfo vertexInput{
+        .vertexBindingDescriptionCount = static_cast<uint32_t>(bindings.size()),
+        .pVertexBindingDescriptions = bindings.data(),
+        .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size()),
+        .pVertexAttributeDescriptions = attributes.data()};
+
+    const vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
+        .topology = vk::PrimitiveTopology::eTriangleList};
+
+    const vk::PipelineViewportStateCreateInfo viewport{.viewportCount = 1u, .scissorCount = 1u};
+
+    const vk::PipelineRasterizationStateCreateInfo rasterizer{.polygonMode = vk::PolygonMode::eFill,
+                                                              .cullMode = ToVkCullMode(desc.Cull),
+                                                              .frontFace =
+                                                                  vk::FrontFace::eCounterClockwise,
+                                                              .lineWidth = 1.f};
+
+    const vk::PipelineMultisampleStateCreateInfo multisampling{.rasterizationSamples =
+                                                                   vk::SampleCountFlagBits::e1};
+
+    const vk::PipelineDepthStencilStateCreateInfo depthStencil{
+        .depthTestEnable = desc.Depth.bTest ? vk::True : vk::False,
+        .depthWriteEnable = desc.Depth.bWrite ? vk::True : vk::False,
+        .depthCompareOp = ToVk(desc.Depth.Compare)};
+
+    std::vector<vk::PipelineColorBlendAttachmentState> blends;
+    blends.reserve(desc.RenderTargetBlends.size());
+    for (const RenderTargetBlend& blend : desc.RenderTargetBlends)
+    {
+        blends.push_back(vk::PipelineColorBlendAttachmentState{
+            .blendEnable = blend.bEnable ? vk::True : vk::False,
+            .srcColorBlendFactor = ToVkBlendFactor(blend.SrcColor),
+            .dstColorBlendFactor = ToVkBlendFactor(blend.DstColor),
+            .colorBlendOp = ToVkBlendOp(blend.ColorOp),
+            .srcAlphaBlendFactor = ToVkBlendFactor(blend.SrcAlpha),
+            .dstAlphaBlendFactor = ToVkBlendFactor(blend.DstAlpha),
+            .alphaBlendOp = ToVkBlendOp(blend.AlphaOp),
+            .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                              vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA});
+    }
+
+    const vk::PipelineColorBlendStateCreateInfo colorBlending{
+        .attachmentCount = static_cast<uint32_t>(blends.size()), .pAttachments = blends.data()};
+
+    // Viewport and scissor are always dynamic (see ICommandList); cull is dynamic
+    // only when the caller says so, because a pipeline that never needs it should
+    // not pay for a state token per draw.
+    std::vector<vk::DynamicState> dynamicStates{vk::DynamicState::eViewport,
+                                                vk::DynamicState::eScissor};
+    if (desc.bDynamicCull)
+        dynamicStates.push_back(vk::DynamicState::eCullMode);
+
+    const vk::PipelineDynamicStateCreateInfo dynamicState{
+        .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+        .pDynamicStates = dynamicStates.data()};
+
+    std::vector<vk::Format> colorFormats;
+    colorFormats.reserve(desc.RenderTargetFormats.size());
+    for (const Format format : desc.RenderTargetFormats)
+        colorFormats.push_back(ToVk(format));
+
+    const vk::PipelineRenderingCreateInfo renderingInfo{
+        .colorAttachmentCount = static_cast<uint32_t>(colorFormats.size()),
+        .pColorAttachmentFormats = colorFormats.data(),
+        .depthAttachmentFormat = ToVk(desc.DepthFormat)};
+
+    const vk::GraphicsPipelineCreateInfo createInfo{.pNext = &renderingInfo,
+                                                    .stageCount =
+                                                        static_cast<uint32_t>(stages.size()),
+                                                    .pStages = stages.data(),
+                                                    .pVertexInputState = &vertexInput,
+                                                    .pInputAssemblyState = &inputAssembly,
+                                                    .pViewportState = &viewport,
+                                                    .pRasterizationState = &rasterizer,
+                                                    .pMultisampleState = &multisampling,
+                                                    .pDepthStencilState = &depthStencil,
+                                                    .pColorBlendState = &colorBlending,
+                                                    .pDynamicState = &dynamicState,
+                                                    .layout = GetPipelineLayout(desc.Layout)};
+
+    VulkanGraphicsPipeline pipeline{
+        vk::raii::Pipeline(m_Device, GetVkPipelineCache(&cache), createInfo)};
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *pipeline.Pipeline, vk::ObjectType::ePipeline,
+                       desc.DebugName.c_str());
+    }
+
+    return m_GraphicsPipelines.Create(std::move(pipeline));
+}
+
+void VulkanDevice::Destroy(GraphicsPipelineHandle handle)
+{
+    if (m_GraphicsPipelines.Release(handle))
+        return;
+
+    ReportStaleHandle(std::format("Rhi::VulkanDevice::Destroy(GraphicsPipelineHandle): handle "
+                                  "{:#010x} is stale or was never valid.",
+                                  handle.Value));
+}
+
+vk::PipelineLayout VulkanDevice::GetPipelineLayout(PipelineLayoutHandle handle) const
+{
+    const VulkanPipelineLayout* pLayout = m_PipelineLayouts.Get(handle);
+    return pLayout ? *pLayout->Layout : vk::PipelineLayout{};
+}
+
+vk::Pipeline VulkanDevice::GetPipeline(GraphicsPipelineHandle handle) const
+{
+    const VulkanGraphicsPipeline* pPipeline = m_GraphicsPipelines.Get(handle);
+    return pPipeline ? *pPipeline->Pipeline : vk::Pipeline{};
 }
 
 FenceHandle VulkanDevice::CreateFence(const FenceDesc& desc)

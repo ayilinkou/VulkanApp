@@ -75,6 +75,14 @@ TEST_CASE("Formats map to the VkFormat their name claims", "[RhiConversions]")
     REQUIRE(ToVk(Format::RGBA8Srgb) == vk::Format::eR8G8B8A8Srgb);
     REQUIRE(ToVk(Format::BGRA8Unorm) == vk::Format::eB8G8R8A8Unorm);
     REQUIRE(ToVk(Format::RGBA16Float) == vk::Format::eR16G16B16A16Sfloat);
+
+    // The vertex-attribute formats, where a transposition is just as quiet:
+    // swapping RG32Float and RGB32Float still round-trips and only shows up as
+    // geometry reading one component of garbage.
+    REQUIRE(ToVk(Format::RG32Float) == vk::Format::eR32G32Sfloat);
+    REQUIRE(ToVk(Format::RGB32Float) == vk::Format::eR32G32B32Sfloat);
+    REQUIRE(ToVk(Format::RGBA32Float) == vk::Format::eR32G32B32A32Sfloat);
+
     REQUIRE(ToVk(Format::D16Unorm) == vk::Format::eD16Unorm);
     REQUIRE(ToVk(Format::D32Float) == vk::Format::eD32Sfloat);
     REQUIRE(ToVk(Format::D24UnormS8Uint) == vk::Format::eD24UnormS8Uint);
@@ -84,11 +92,17 @@ TEST_CASE("Formats map to the VkFormat their name claims", "[RhiConversions]")
 TEST_CASE("A VkFormat outside the curated set is rejected rather than guessed at",
           "[RhiConversions]")
 {
-    // Deliberately a real format the enum does not carry: vertex-attribute
-    // formats are out of scope until pipeline creation is neutralized. Silently
-    // returning Undefined here would turn a missing mapping into a
-    // wrong-format resource much later.
-    REQUIRE_THROWS_AS(FromVk(vk::Format::eR32G32B32A32Sfloat), std::runtime_error);
+    // Deliberately a real format the enum does not carry. Three-component 8-bit
+    // is the safest specimen available: it is poorly supported in hardware and
+    // has no use here, so it is unlikely to be curated in later and quietly turn
+    // this case into an assertion about nothing.
+    //
+    // This used to name a vertex-attribute format, which stopped being outside
+    // the set when pipeline creation was neutralized and RG/RGB/RGBA32Float were
+    // added -- the specimen expired, not the rule. Silently returning Undefined
+    // here would still turn a missing mapping into a wrong-format resource much
+    // later, which is what this guards.
+    REQUIRE_THROWS_AS(FromVk(vk::Format::eR8G8B8Unorm), std::runtime_error);
 }
 
 TEST_CASE("Depth and stencil predicates agree with the format list", "[RhiConversions]")

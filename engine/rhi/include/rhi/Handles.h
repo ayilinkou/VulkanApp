@@ -52,4 +52,12 @@ using BindGroupLayoutHandle = Core::Handle<struct BindGroupLayoutTag>;
  * changing what it points at means creating another and destroying this one.
  */
 using BindGroupHandle = Core::Handle<struct BindGroupTag>;
+
+/** Bind group layouts plus push constant ranges: a VkPipelineLayout, a root signature. */
+using PipelineLayoutHandle = Core::Handle<struct PipelineLayoutTag>;
+
+/** Compiled shader bytes. The engine loads them; the device makes a module of them (D24). */
+using ShaderModuleHandle = Core::Handle<struct ShaderModuleTag>;
+
+using GraphicsPipelineHandle = Core::Handle<struct GraphicsPipelineTag>;
 } // namespace Hikari::Rhi

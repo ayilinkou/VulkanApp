@@ -14,7 +14,6 @@ engine_module(
   src/vulkan/VulkanCommandList.cpp
   src/vulkan/VulkanCommandAllocator.cpp
   src/vulkan/VulkanUploadContext.cpp
-  src/vulkan/PipelineBuilder.cpp
   src/vulkan/VulkanPipelineCache.cpp
   src/vulkan/DescriptorAllocator.cpp
   src/vulkan/ComputePipelineBuilder.cpp

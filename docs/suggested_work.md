@@ -224,16 +224,29 @@ dropping silently.
 
 | Limit | Where | Value | Problem |
 |---|---|---|---|
-| `TextureBinding::COUNT` | `src/Texture.h:12` | 3 | Albedo / Normal / MetallicRoughness only — still a hard blocker for emissive, occlusion or clearcoat maps |
+| `TextureBinding::COUNT` | `engine/engine/src/Texture.h` | 3 | Albedo / Normal / MetallicRoughness only — the ceiling on emissive, occlusion or clearcoat maps |
 
 **Fix**
 
 The three-texture cap is no longer a descriptor-pool ceiling, so it will not abort — it is
 now purely an expressiveness limit in the material model. Adding a fourth slot means touching
 the enum, the descriptor set layout, `PBRMaterial`'s writes and both surface shaders in step.
-That argues for doing it as part of **step 70 (bindless texture array + material params
+That argued for doing it as part of **step 70 (bindless texture array + material params
 SSBO)** rather than on its own, since 70 removes the cap entirely rather than raising it by
-one. Raise it early only if a scene needs emissive before then.
+one.
+
+> **Superseded, 6 September 2026.** Two things changed. Stage 7.5's D14 defers bindless until
+> after the D3D12 backend, so step 70 is much further out than it was when this was written —
+> and the argument "wait for 70" weakens as 70 recedes. And the premise above is wrong about
+> what the cap costs: emissive and occlusion are not parsed by the loader, are absent from
+> `MaterialData`, and are named by no shader, so nothing is currently being *held back* — the
+> cap bounds a feature that does not exist rather than blocking one that half does. Raising it
+> is therefore new feature work, which is why Stage 7.5 excluded it under its inclusion test
+> and why it is now its own `backlog.md` row rather than a rider on step 70. It also gets
+> cheaper after Stage 7.5's step 5, which rewrites the material set and splits combined image
+> samplers: after that, a fourth map is an enum value, a layout entry, a `PBRMaterial` write
+> and two shaders, with no descriptor-pool consequences. It **changes the baseline
+> deliberately**, so it is scheduled rather than opportunistic.
 
 ## 2.7 — **P3** Smaller code-quality items
 

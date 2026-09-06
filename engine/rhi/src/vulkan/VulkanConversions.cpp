@@ -6,6 +6,84 @@
 
 namespace Hikari::Rhi::Vulkan
 {
+vk::ShaderStageFlags ToVk(ShaderStage stages)
+{
+    vk::ShaderStageFlags result{};
+    if (Any(stages & ShaderStage::Vertex))
+        result |= vk::ShaderStageFlagBits::eVertex;
+    if (Any(stages & ShaderStage::Pixel))
+        result |= vk::ShaderStageFlagBits::eFragment;
+    if (Any(stages & ShaderStage::Compute))
+        result |= vk::ShaderStageFlagBits::eCompute;
+
+    if (!result)
+        throw std::runtime_error("Rhi::Vulkan::ToVk(ShaderStage): visible to no shader stage.");
+
+    return result;
+}
+
+vk::FormatFeatureFlags ToVkFormatFeatures(TextureUsage usage)
+{
+    vk::FormatFeatureFlags features{};
+    if (Any(usage & TextureUsage::Sampled))
+        features |= vk::FormatFeatureFlagBits::eSampledImage;
+    if (Any(usage & TextureUsage::Storage))
+        features |= vk::FormatFeatureFlagBits::eStorageImage;
+    if (Any(usage & TextureUsage::ColorAttachment))
+        features |= vk::FormatFeatureFlagBits::eColorAttachment;
+    if (Any(usage & TextureUsage::DepthStencilAttachment))
+        features |= vk::FormatFeatureFlagBits::eDepthStencilAttachment;
+    if (Any(usage & TextureUsage::CopySrc))
+        features |= vk::FormatFeatureFlagBits::eTransferSrc;
+    if (Any(usage & TextureUsage::CopyDst))
+        features |= vk::FormatFeatureFlagBits::eTransferDst;
+
+    return features;
+}
+
+vk::CullModeFlags ToVk(CullMode mode)
+{
+    switch (mode)
+    {
+        case CullMode::None:
+            return vk::CullModeFlagBits::eNone;
+        case CullMode::Front:
+            return vk::CullModeFlagBits::eFront;
+        case CullMode::Back:
+            return vk::CullModeFlagBits::eBack;
+    }
+
+    throw std::runtime_error("Rhi::VulkanDevice: unmapped CullMode.");
+}
+
+vk::AttachmentLoadOp ToVkLoadOp(LoadOp op)
+{
+    switch (op)
+    {
+        case LoadOp::Preserve:
+            return vk::AttachmentLoadOp::eLoad;
+        case LoadOp::Clear:
+            return vk::AttachmentLoadOp::eClear;
+        case LoadOp::Discard:
+            return vk::AttachmentLoadOp::eDontCare;
+    }
+
+    throw std::runtime_error("Rhi::Vulkan::ToVkLoadOp: unmapped LoadOp.");
+}
+
+vk::AttachmentStoreOp ToVkStoreOp(StoreOp op)
+{
+    switch (op)
+    {
+        case StoreOp::Preserve:
+            return vk::AttachmentStoreOp::eStore;
+        case StoreOp::Discard:
+            return vk::AttachmentStoreOp::eDontCare;
+    }
+
+    throw std::runtime_error("Rhi::Vulkan::ToVkStoreOp: unmapped StoreOp.");
+}
+
 namespace
 {
 /**
@@ -260,6 +338,12 @@ vk::Format ToVk(Format format)
             return vk::Format::eB8G8R8A8Unorm;
         case Format::RGBA16Float:
             return vk::Format::eR16G16B16A16Sfloat;
+        case Format::RG32Float:
+            return vk::Format::eR32G32Sfloat;
+        case Format::RGB32Float:
+            return vk::Format::eR32G32B32Sfloat;
+        case Format::RGBA32Float:
+            return vk::Format::eR32G32B32A32Sfloat;
         case Format::D16Unorm:
             return vk::Format::eD16Unorm;
         case Format::D32Float:

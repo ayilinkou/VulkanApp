@@ -14,7 +14,6 @@
 #include <rhi/IDevice.h>
 #include <rhi/IPresentTarget.h>
 #include <rhi/RhiTypes.h>
-#include <rhi/vulkan/VulkanNative.h>
 
 #include "vulkan/OffscreenTarget.h"
 
@@ -68,26 +67,23 @@ constexpr std::array<std::array<float, 4>, 3> kFrameColors{
  * undefined behaviour, and it is exactly the overlap these cases exist to
  * exercise.
  */
+/**
+ * One frame's recording storage. An allocator each rather than one shared,
+ * because these cases deliberately keep several frames in flight at once and an
+ * allocator may not be reset while work recorded from it is still running.
+ */
 struct FrameCommands
 {
-    vk::raii::CommandPool Pool = nullptr;
-    vk::raii::CommandBuffer Buffer = nullptr;
+    std::unique_ptr<ICommandAllocator> Allocator;
+    ICommandList* List = nullptr;
 };
 
 FrameCommands MakeFrameCommands(IDevice& device)
 {
-    vk::raii::Device& vkDevice = Vulkan::GetDevice(device);
-
     FrameCommands frame;
-    frame.Pool = vk::raii::CommandPool(
-        vkDevice,
-        vk::CommandPoolCreateInfo{.flags = vk::CommandPoolCreateFlagBits::eTransient,
-                                  .queueFamilyIndex = Vulkan::GetGraphicsQueueFamily(device)});
-
-    const vk::CommandBufferAllocateInfo allocInfo{.commandPool = *frame.Pool,
-                                                  .level = vk::CommandBufferLevel::ePrimary,
-                                                  .commandBufferCount = 1u};
-    frame.Buffer = std::move(vk::raii::CommandBuffers(vkDevice, allocInfo).front());
+    frame.Allocator = device.CreateCommandAllocator(
+        CommandAllocatorDesc{.Queue = QueueType::Graphics, .DebugName = "Present Test Frame"});
+    frame.List = &frame.Allocator->Acquire();
     return frame;
 }
 
@@ -101,12 +97,12 @@ FrameCommands MakeFrameCommands(IDevice& device)
 struct ClearRect
 {
     std::array<float, 4> Color{};
-    vk::Rect2D Area{};
+    Rect2D Area{};
 };
 
-vk::Rect2D WholeImage(Extent2D extent)
+Rect2D WholeImage(Extent2D extent)
 {
-    return vk::Rect2D{.offset = {0, 0}, .extent = vk::Extent2D{extent.Width, extent.Height}};
+    return Rect2D{.Extent = extent};
 }
 
 /**
@@ -120,10 +116,9 @@ vk::Rect2D WholeImage(Extent2D extent)
  * ShaderResource is the finished state that matches the target's Sampled usage,
  * and the layout the readbacks below hand to ReadRenderedTexture.
  */
-void RecordClears(IDevice& device, vk::CommandBuffer cmd, const AcquiredImage& acquired,
+void RecordClears(ICommandList* list, const AcquiredImage& acquired,
                   std::span<const ClearRect> clears)
 {
-    const std::unique_ptr<ICommandList> list = Vulkan::WrapCommandList(device, cmd);
     list->Begin();
     list->Barrier(BarrierPresets::AcquiredImageToRenderTarget().On(acquired.Texture));
 
@@ -141,67 +136,38 @@ void RecordClears(IDevice& device, vk::CommandBuffer cmd, const AcquiredImage& a
             list->Barrier(betweenPasses.On(acquired.Texture));
         }
 
-        const std::array<float, 4>& color = clears[i].Color;
-        const vk::ClearValue clearValue =
-            vk::ClearColorValue(color[0], color[1], color[2], color[3]);
-        const vk::RenderingAttachmentInfo colorAttachment{
-            .imageView = Vulkan::GetImageView(device, acquired.View),
-            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .loadOp = vk::AttachmentLoadOp::eClear,
-            .storeOp = vk::AttachmentStoreOp::eStore,
-            .clearValue = clearValue};
+        // A rendering scope whose only content is the clear the load op performs.
+        const std::array renderTargets{RenderTarget{
+            .View = acquired.View, .Load = LoadOp::Clear, .ClearColor = clears[i].Color}};
 
-        const vk::RenderingInfo renderingInfo{.renderArea = clears[i].Area,
-                                              .layerCount = 1u,
-                                              .colorAttachmentCount = 1u,
-                                              .pColorAttachments = &colorAttachment};
-
-        cmd.beginRendering(renderingInfo);
-        cmd.endRendering();
+        list->BeginRendering(
+            RenderingDesc{.RenderArea = clears[i].Area, .RenderTargets = renderTargets});
+        list->EndRendering();
     }
 
     list->Barrier(BarrierPresets::RenderTargetToShaderResource().On(acquired.Texture));
     list->End();
 }
 
-void RecordClearFrame(IDevice& device, vk::CommandBuffer cmd, const AcquiredImage& acquired,
+void RecordClearFrame(ICommandList* list, const AcquiredImage& acquired,
                       const std::array<float, 4>& color, Extent2D extent)
 {
     const std::array clears{ClearRect{.Color = color, .Area = WholeImage(extent)}};
-    RecordClears(device, cmd, acquired, clears);
+    RecordClears(list, acquired, clears);
 }
 
 /**
- * Submits `cmd` with the waits the acquire asked for and the signal the target
+ * Submits `list` with the waits the acquire asked for and the signal the target
  * requires before Present will accept the image.
- *
- * Vulkan-side because submitting is: the RHI hands out a command list and the
- * semaphores, but not a queue, so this is the one part of a frame that a
- * neutral test cannot express. It goes away with the escape hatch when
- * submission moves behind the RHI in Stage 8.
  */
-void SubmitFrame(IDevice& device, vk::CommandBuffer cmd, std::span<const SemaphoreHandle> waitOn,
+void SubmitFrame(IDevice& device, ICommandList& list, std::span<const SemaphoreHandle> waitOn,
                  SemaphoreHandle signalOnComplete)
 {
-    std::vector<vk::Semaphore> waitSemaphores;
-    std::vector<vk::PipelineStageFlags> waitStages;
-    for (const SemaphoreHandle handle : waitOn)
-    {
-        waitSemaphores.push_back(Vulkan::GetSemaphore(device, handle));
-        waitStages.push_back(vk::PipelineStageFlagBits::eColorAttachmentOutput);
-    }
-
-    const vk::Semaphore signalSemaphore = Vulkan::GetSemaphore(device, signalOnComplete);
-    const vk::SubmitInfo submitInfo{.waitSemaphoreCount =
-                                        static_cast<uint32_t>(waitSemaphores.size()),
-                                    .pWaitSemaphores = waitSemaphores.data(),
-                                    .pWaitDstStageMask = waitStages.data(),
-                                    .commandBufferCount = 1u,
-                                    .pCommandBuffers = &cmd,
-                                    .signalSemaphoreCount = 1u,
-                                    .pSignalSemaphores = &signalSemaphore};
-
-    Vulkan::GetGraphicsQueue(device).submit(submitInfo, nullptr);
+    ICommandList* pList = &list;
+    device.Submit(SubmitDesc{.Queue = QueueType::Graphics,
+                             .CommandLists = {&pList, 1u},
+                             .WaitSemaphores = waitOn,
+                             .SignalSemaphores = {&signalOnComplete, 1u}});
 }
 
 /**
@@ -328,8 +294,8 @@ TEST_CASE("Three overlapping frames render into an offscreen target", "[rhi][gpu
 
         imagesByIndex[acquired.Index] = acquired.Texture;
 
-        RecordClearFrame(device, *frames[frame].Buffer, acquired, kFrameColors[frame], kExtent);
-        SubmitFrame(device, *frames[frame].Buffer, acquired.WaitSemaphores,
+        RecordClearFrame(frames[frame].List, acquired, kFrameColors[frame], kExtent);
+        SubmitFrame(device, *frames[frame].List, acquired.WaitSemaphores,
                     target->GetRenderCompleteSemaphore(acquired.Index));
 
         CHECK(target->Present(acquired.Index));
@@ -388,8 +354,8 @@ TEST_CASE("Recreating an offscreen target resizes it", "[rhi][gpu][present]")
     {
         const FrameCommands frame = MakeFrameCommands(device);
         const AcquiredImage acquired = target->Acquire();
-        RecordClearFrame(device, *frame.Buffer, acquired, kFrameColors[0], kExtent);
-        SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+        RecordClearFrame(frame.List, acquired, kFrameColors[0], kExtent);
+        SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                     target->GetRenderCompleteSemaphore(acquired.Index));
         CHECK(target->Present(acquired.Index));
         device.WaitIdle();
@@ -406,8 +372,8 @@ TEST_CASE("Recreating an offscreen target resizes it", "[rhi][gpu][present]")
     CHECK(acquired.WaitSemaphores.empty());
 
     const FrameCommands frame = MakeFrameCommands(device);
-    RecordClearFrame(device, *frame.Buffer, acquired, kFrameColors[1], kSmaller);
-    SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+    RecordClearFrame(frame.List, acquired, kFrameColors[1], kSmaller);
+    SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                 target->GetRenderCompleteSemaphore(acquired.Index));
     CHECK(target->Present(acquired.Index));
 
@@ -494,8 +460,8 @@ TEST_CASE("Readback returns the exact pixels of a solid clear", "[rhi][gpu][pres
 
     const FrameCommands frame = MakeFrameCommands(device);
     const AcquiredImage acquired = target->Acquire();
-    RecordClearFrame(device, *frame.Buffer, acquired, kColor, kExtent);
-    SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+    RecordClearFrame(frame.List, acquired, kColor, kExtent);
+    SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                 target->GetRenderCompleteSemaphore(acquired.Index));
     REQUIRE(target->Present(acquired.Index));
 
@@ -549,14 +515,13 @@ TEST_CASE("Readback packs a non-square, non-power-of-two extent tightly", "[rhi]
     const std::array clears{
         ClearRect{.Color = kBackground, .Area = WholeImage(kExtent)},
         ClearRect{.Color = kCorner,
-                  .Area = vk::Rect2D{.offset = {0, 0},
-                                     .extent = vk::Extent2D{kCornerWidth, kCornerHeight}}},
+                  .Area = Rect2D{.Extent = {kCornerWidth, kCornerHeight}}},
     };
 
     const FrameCommands frame = MakeFrameCommands(device);
     const AcquiredImage acquired = target->Acquire();
-    RecordClears(device, *frame.Buffer, acquired, clears);
-    SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+    RecordClears(frame.List, acquired, clears);
+    SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                 target->GetRenderCompleteSemaphore(acquired.Index));
     REQUIRE(target->Present(acquired.Index));
 
@@ -614,8 +579,8 @@ TEST_CASE("Readback leaves nothing behind on the device", "[rhi][gpu][present]")
     {
         const FrameCommands frame = MakeFrameCommands(device);
         const AcquiredImage acquired = target->Acquire();
-        RecordClearFrame(device, *frame.Buffer, acquired, kFrameColors[0], kExtent);
-        SubmitFrame(device, *frame.Buffer, acquired.WaitSemaphores,
+        RecordClearFrame(frame.List, acquired, kFrameColors[0], kExtent);
+        SubmitFrame(device, *frame.List, acquired.WaitSemaphores,
                     target->GetRenderCompleteSemaphore(acquired.Index));
         REQUIRE(target->Present(acquired.Index));
 

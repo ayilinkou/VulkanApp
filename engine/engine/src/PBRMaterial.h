@@ -5,9 +5,10 @@
 
 #include "glm/glm.hpp"
 
+#include <rhi/BindGroup.h>
 #include <rhi/Handles.h>
 #include <rhi/IDevice.h>
-#include <rhi/vulkan/DescriptorAllocator.h>
+#include <rhi/UniqueHandle.h>
 
 #include "Material.h"
 #include "Texture.h"
@@ -19,20 +20,18 @@ class AssetRegistry;
 class PBRMaterial : public Material
 {
 public:
-    PBRMaterial(Hikari::Rhi::IDevice& rhiDevice,
-                Hikari::Rhi::Vulkan::DescriptorAllocator& descriptorAllocator,
-                vk::raii::DescriptorSetLayout& setLayout, Hikari::Rhi::SamplerHandle sampler,
-                aiMaterial* mat, const std::string& texturesParentFolder, AssetRegistry& assets);
+    PBRMaterial(Hikari::Rhi::IDevice& rhiDevice, Hikari::Rhi::BindGroupLayoutHandle materialLayout,
+                Hikari::Rhi::SamplerHandle sampler, aiMaterial* mat,
+                const std::string& texturesParentFolder, AssetRegistry& assets);
 
     virtual void* GetPushConstantData() override { return &m_MatData; }
 
 private:
     void LoadTextures(aiMaterial* mat, const std::string& texturesParentFolder,
                       AssetRegistry& assets);
-    void CreateDescriptorSet(Hikari::Rhi::IDevice& rhiDevice,
-                             Hikari::Rhi::Vulkan::DescriptorAllocator& descriptorAllocator,
-                             vk::raii::DescriptorSetLayout& setLayout,
-                             Hikari::Rhi::SamplerHandle sampler);
+    void CreateBindGroup(Hikari::Rhi::IDevice& rhiDevice,
+                         Hikari::Rhi::BindGroupLayoutHandle materialLayout,
+                         Hikari::Rhi::SamplerHandle sampler);
 
 public:
     struct MaterialData

@@ -1,11 +1,14 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
 #include <core/Extent3D.h>
 #include <rhi/Barrier.h>
 #include <rhi/Handles.h>
+#include <rhi/Pipeline.h>
+#include <rhi/Rendering.h>
 #include <rhi/RhiTypes.h>
 
 namespace Hikari::Rhi
@@ -96,6 +99,88 @@ public:
      * way it adds a batch rather than hard-coding numbers beside the call.
      */
     virtual BarrierCounts Barrier(const TextureBarrier& barrier) = 0;
+
+    /**
+     * Opens and closes a rendering scope. Draws are recorded between the two,
+     * and every attachment must already be in the layout rendering needs -- this
+     * transitions nothing, for the same reason the copies below do not.
+     *
+     * Scopes do not nest, and a list must close every scope it opens.
+     */
+    virtual void BeginRendering(const RenderingDesc& desc) = 0;
+    virtual void EndRendering() = 0;
+
+    /**
+     * Binds the pipeline subsequent draws use, and the resources they read.
+     *
+     * SetBindGroup takes the layout as well as the group because that is what
+     * both APIs bind against -- a VkPipelineLayout, a root signature -- and
+     * because layout identity is what decides whether a bound group survives the
+     * next SetPipeline. Passing it explicitly keeps that visible instead of
+     * making it a consequence of call order.
+     */
+    virtual void SetPipeline(GraphicsPipelineHandle pipeline) = 0;
+    virtual void SetBindGroup(PipelineLayoutHandle layout, uint32_t slot,
+                              BindGroupHandle group) = 0;
+
+    /**
+     * The compute counterparts. Separate calls because both APIs keep graphics
+     * and compute bindings apart -- Vulkan by bind point, D3D12 by having
+     * SetComputeRootSignature and SetGraphicsRootSignature be different entry
+     * points -- so one call would have to guess which the caller meant.
+     */
+    virtual void SetPipeline(ComputePipelineHandle pipeline) = 0;
+    virtual void SetComputeBindGroup(PipelineLayoutHandle layout, uint32_t slot,
+                                     BindGroupHandle group) = 0;
+
+    /**
+     * Constants written straight into the command list.
+     *
+     * Takes the layout for the same reason SetBindGroup does: both APIs bind
+     * against it, and the range being pushed into was declared there. `stages`
+     * must name a range the layout actually declares.
+     *
+     * Bytes rather than a template, so the neutral interface stays free of the
+     * caller's struct -- the layout of that struct is the caller's contract with
+     * its shaders, not with the RHI.
+     */
+    virtual void PushConstants(PipelineLayoutHandle layout, ShaderStage stages, uint32_t offset,
+                               std::span<const std::byte> data) = 0;
+
+    /** Dispatches a compute shader, in thread groups rather than in threads. */
+    virtual void Dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ) = 0;
+
+    /**
+     * Binds the geometry a draw reads. `slot` matches the pipeline's
+     * VertexBufferLayout::Slot, so a mesh stream and an instance stream are two
+     * calls rather than one array -- they come from different owners and change
+     * at different rates.
+     */
+    virtual void SetVertexBuffer(uint32_t slot, BufferHandle buffer, uint64_t offset = 0u) = 0;
+    virtual void SetIndexBuffer(BufferHandle buffer, IndexFormat format, uint64_t offset = 0u) = 0;
+
+    /**
+     * Overrides the pipeline's cull mode, which is legal only on a pipeline that
+     * declared bDynamicCull. A two-sided material is a per-batch property, so
+     * this varies within a pass rather than between pipelines.
+     */
+    virtual void SetCullMode(CullMode mode) = 0;
+
+    /**
+     * `firstInstance` is why this takes five arguments rather than three: the
+     * renderer draws instanced batches out of one buffer, so a draw names its
+     * slice of it.
+     */
+    virtual void DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex,
+                             int32_t vertexOffset, uint32_t firstInstance) = 0;
+
+    /**
+     * Viewport and scissor are always dynamic. Both APIs set them on the command
+     * list rather than baking them into a pipeline, and a renderer that resizes
+     * would otherwise rebuild every pipeline to change a number.
+     */
+    virtual void SetViewport(const Viewport& viewport) = 0;
+    virtual void SetScissor(const Rect2D& rect) = 0;
 
     /**
      * Copies must be issued between barriers that put both resources in the

@@ -3,7 +3,8 @@
 #include <cstdint>
 #include <string>
 
-#include "vulkan/vulkan_raii.hpp"
+#include <rhi/Handles.h>
+#include <rhi/UniqueHandle.h>
 
 struct aiMaterial;
 
@@ -21,7 +22,7 @@ public:
     virtual ~Material() = default;
 
     virtual void* GetPushConstantData() = 0;
-    vk::DescriptorSet GetDescriptorSet() const { return *m_DescriptorSet; }
+    Hikari::Rhi::BindGroupHandle GetBindGroup() const { return m_BindGroup.Get(); }
     const std::string& GetName() const { return m_Name; }
     bool IsTwoSided() const { return m_bTwoSided; }
     bool IsOpaque() const { return m_Opacity == 1.f; }
@@ -30,7 +31,7 @@ public:
     static BlendMode DetectBlendMode(aiMaterial* pMat);
 
 protected:
-    vk::raii::DescriptorSet m_DescriptorSet = nullptr;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupHandle> m_BindGroup;
 
     const std::string m_Name;
 

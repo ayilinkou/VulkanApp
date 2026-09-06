@@ -11,13 +11,13 @@
 
 #include <core/Log.h>
 
+#include "vulkan/DebugNames.h"
 #include <core/Extent2D.h>
 #include <rhi/BufferDesc.h>
 #include <rhi/ICommandList.h>
 #include <rhi/TextureDesc.h>
 #include <rhi/TextureViewDesc.h>
 #include <rhi/UniqueHandle.h>
-#include <rhi/vulkan/DebugNames.h>
 
 #include "vulkan/VulkanCommandList.h"
 

@@ -74,6 +74,86 @@ public:
         return nullptr;
     }
 
+    std::unique_ptr<ICommandAllocator> CreateCommandAllocator(const CommandAllocatorDesc&) override
+    {
+        return nullptr;
+    }
+
+    BindGroupLayoutHandle CreateBindGroupLayout(const BindGroupLayoutDesc&) override
+    {
+        return BindGroupLayoutHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(BindGroupLayoutHandle handle) override { DestroyedLayouts.push_back(handle); }
+
+    BindGroupHandle CreateBindGroup(const BindGroupDesc&) override
+    {
+        return BindGroupHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(BindGroupHandle handle) override { DestroyedBindGroups.push_back(handle); }
+
+    uint32_t GetLiveBindGroupLayoutCount() const override
+    {
+        return static_cast<uint32_t>(DestroyedLayouts.size());
+    }
+
+    uint32_t GetLiveBindGroupCount() const override
+    {
+        return static_cast<uint32_t>(DestroyedBindGroups.size());
+    }
+
+    bool IsFormatSupported(Format, TextureUsage) const override { return true; }
+
+    PipelineLayoutHandle CreatePipelineLayout(const PipelineLayoutDesc&) override
+    {
+        return PipelineLayoutHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(PipelineLayoutHandle handle) override { DestroyedPipelineLayouts.push_back(handle); }
+
+    ShaderModuleHandle CreateShaderModule(const ShaderModuleDesc&) override
+    {
+        return ShaderModuleHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(ShaderModuleHandle handle) override { DestroyedShaderModules.push_back(handle); }
+
+    GraphicsPipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc&,
+                                                  IPipelineCache&) override
+    {
+        return GraphicsPipelineHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(GraphicsPipelineHandle handle) override { DestroyedPipelines.push_back(handle); }
+
+    ComputePipelineHandle CreateComputePipeline(const ComputePipelineDesc&,
+                                                IPipelineCache&) override
+    {
+        return ComputePipelineHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(ComputePipelineHandle handle) override
+    {
+        DestroyedComputePipelines.push_back(handle);
+    }
+
+    FenceHandle CreateFence(const FenceDesc&) override
+    {
+        return FenceHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(FenceHandle handle) override { DestroyedFences.push_back(handle); }
+
+    uint32_t GetLiveFenceCount() const override
+    {
+        return static_cast<uint32_t>(DestroyedFences.size());
+    }
+
+    void WaitForFence(FenceHandle, uint64_t) override {}
+
+    void Submit(const SubmitDesc&) override {}
+
     std::unique_ptr<IPipelineCache> CreatePipelineCache(const PipelineCacheDesc&) override
     {
         return nullptr;
@@ -103,6 +183,13 @@ public:
     std::vector<TextureHandle> DestroyedTextures;
     std::vector<TextureViewHandle> DestroyedViews;
     std::vector<SamplerHandle> DestroyedSamplers;
+    std::vector<FenceHandle> DestroyedFences;
+    std::vector<BindGroupLayoutHandle> DestroyedLayouts;
+    std::vector<BindGroupHandle> DestroyedBindGroups;
+    std::vector<PipelineLayoutHandle> DestroyedPipelineLayouts;
+    std::vector<ShaderModuleHandle> DestroyedShaderModules;
+    std::vector<GraphicsPipelineHandle> DestroyedPipelines;
+    std::vector<ComputePipelineHandle> DestroyedComputePipelines;
 
 private:
     DeviceCaps m_Caps{};

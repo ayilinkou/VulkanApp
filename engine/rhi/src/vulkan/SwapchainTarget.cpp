@@ -8,10 +8,10 @@
 
 #include <core/Log.h>
 
+#include "vulkan/DebugNames.h"
 #include <core/Extent2D.h>
 #include <rhi/TextureDesc.h>
 #include <rhi/TextureViewDesc.h>
-#include <rhi/vulkan/DebugNames.h>
 #include <rhi/vulkan/SwapchainUtil.h>
 #include <rhi/vulkan/VulkanNative.h>
 

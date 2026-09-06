@@ -12,11 +12,10 @@ engine_module(
   src/vulkan/VulkanBuffer.cpp
   src/vulkan/VulkanTexture.cpp
   src/vulkan/VulkanCommandList.cpp
+  src/vulkan/VulkanCommandAllocator.cpp
   src/vulkan/VulkanUploadContext.cpp
-  src/vulkan/PipelineBuilder.cpp
   src/vulkan/VulkanPipelineCache.cpp
   src/vulkan/DescriptorAllocator.cpp
-  src/vulkan/ComputePipelineBuilder.cpp
   # The single translation unit that instantiates VMA. It has to live in exactly
   # one target, and this is now the only one that owns Vulkan memory.
   src/vulkan/VMAImpl.cpp

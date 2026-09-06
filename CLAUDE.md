@@ -21,9 +21,10 @@ architecture, and prefer them over inventing a design:
   Stage 5 is complete, so R1–R17 are history; the **decisions remain live**, because they
   govern what the RHI's public seam is allowed to say and Part IV's own §10 predates them —
   **except D7 and D8, superseded by Stage 7.5's D14 and D15.** Read it before touching
-  anything under `engine/rhi/include/`. Its §10 lists what should eventually be promoted into
-  the architecture plan; retiring it is a deliberate future decision, not a step in the
-  roadmap, though `backend_readiness_plan.md`'s step 12 proposes itself as the moment.
+  anything under `engine/rhi/include/`. **It and the backend readiness plan retire together**,
+  into one permanent `docs/rhi.md` holding the whole D-series and no step lists — decided at
+  Stage 7.5's step 12, along with the decision not to do it yet. Its §10 is the outline for that
+  merge.
 - `docs/backend_readiness_plan.md` — **retained, like the RHI plan and for the same reason.**
   Stage 7.5: the four seams a second backend needs and Stage 5 did not build — submission and
   command-list ownership, rendering scope, bind groups, pipelines, and draw/dispatch recording
@@ -32,7 +33,8 @@ architecture, and prefer them over inventing a design:
   reorders Part IV's Stage 8. Its D-numbers continue the RHI plan's series deliberately: both
   govern the same seam. It also defines **Stage 7.6** (the backend's non-seam prerequisites)
   and the constraints on **Stage 7.7** (the D3D12 backend itself). Grilled on 6 September 2026;
-  its §0 records what that changed, which was substantial.
+  its §0 records what that changed, which was substantial. Retires together with the RHI
+  extraction plan into a single `docs/rhi.md` — see that document's §10.
 
 ---
 
@@ -139,17 +141,17 @@ even when a task feels finished. Reading (`git status`, `git log`, `git diff`) i
 | 6 — Headless capability | 35–40a | ✅ done (`HeadlessPlatform`, `--headless`, the present-layout seam) |
 | Cleanup between 6 and 7 | — | ✅ done (`Hikari::` namespace + `namespace_check`, CI's `static-checks` job, the `counters`/`timings`/`run` report + `--no-ui`, `docs/backlog.md`) |
 | 7 — Engine shell + DI | 40b, 41–47 | ✅ done (`engine/engine` + `engine/asset` + `engine/editor`, `HikariEditor` + `HikariHeadless`, injected subsystems, the event seam, and headless scene tests in CI) |
-| **7.5 — Backend readiness** | **1–12** | **next** — grilled 6 Sep 2026, ready to start (`docs/backend_readiness_plan.md`) |
-| 7.6 — Backend prerequisites | — | not started — DXIL, the comparison script, Windows GPU CI, runtime-selectable validation, step 48 extended |
+| 7.5 — Backend readiness | 1–12 | ✅ done (`ICommandAllocator`, submission and fences, rendering scope, bind groups, pipelines, draw and dispatch recording — the transitional area is 2 headers from 4 sites, down from 7 from 18) |
+| **7.6 — Backend prerequisites** | **—** | **next** — DXIL, the comparison script, Windows GPU CI, runtime-selectable validation, step 48 extended |
 | 7.7 — D3D12 backend | — | not started — stepped small, Vulkan stays the default |
 | 8+ — Frame graph, DOD, scalability | 48–76 | not started; 48–56 partly superseded by Stage 7.5, and 48 moves to 7.6 |
 
 Update this table when a stage completes.
 
-Stage 7.5 is inserted rather than renumbered: a whole stage at 8 would cascade through every
-cross-reference in three documents, and the `.5` costs nothing. It closes the gap between the
-RHI's neutral *resource* API, which Stage 5 built, and its *frame* API, which nothing has —
-the prerequisite for a D3D12 backend.
+Stages 7.5, 7.6 and 7.7 are inserted rather than renumbered: a whole stage at 8 would cascade
+through every cross-reference in three documents, and the fractions cost nothing. 7.5 closed the
+gap between the RHI's neutral *resource* API, which Stage 5 built, and its *frame* API, which
+nothing had. 7.6 builds the backend's non-seam prerequisites and 7.7 is the backend itself.
 
 ---
 
@@ -408,7 +410,12 @@ Two non-obvious rules that the whole test strategy rests on:
 
 **The RHI's public API is backend-neutral, and that is checked rather than trusted.** Nothing
 under `engine/rhi/include/rhi/` may name a Vulkan or VMA type; the backend lives in
-`engine/rhi/src/vulkan/`, where nothing outside the module can reach it. The one exception is
+`engine/rhi/src/vulkan/`, where nothing outside the module can reach it. **And nothing in
+`engine/` or `apps/` outside that module may name Vulkan at all** — checked on names rather
+than includes, because a precompiled header once put the whole API in scope for a module with
+no include and no allowlist entry to show for it. One file is exempt and it is listed: the ImGui
+backend, permanently. A second entry would be a question about which neutral call is missing —
+that is what the last temporary one turned out to be. The one exception is
 `engine/rhi/include/rhi/vulkan/`, which is *frozen*: seven headers covering what Stages 6–8
 have not taken over yet, and eighteen allowlisted include sites outside the module. Adding
 either fails `rhi_boundary_check`, and so does leaving an allowlist entry behind after its

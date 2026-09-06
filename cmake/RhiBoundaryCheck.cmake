@@ -5,6 +5,7 @@
 #   2. include/rhi/vulkan/, the transitional area that may expose Vulkan, holds
 #      exactly the headers listed here and no others.
 #   3. Outside engine/rhi/, only allowlisted sites may include that area.
+#   4. Outside engine/rhi/, only allowlisted files may name Vulkan at all.
 #
 # Checks 2 and 3 are ratchets rather than ceilings: the lists are allowed to
 # shrink and an entry that stops matching is itself a failure, so neither can
@@ -130,19 +131,11 @@ message(STATUS "rhi_boundary_check: ${header_count} neutral RHI header(s) free o
 set(transitional_headers
     # The escape hatch itself (D9): instance/device/queue for ImGui, and the
     # VkFormat/VkPipelineCache accessors the app's pipeline creation needs.
+    # The permanent residue (D9). ImGui's Vulkan backend takes raw handles and a
+    # VkCommandBuffer by value, so a D3D12 build answers with a sibling file
+    # rather than an edit. The one non-ImGui entry is the physical device, for a
+    # depth-format query the neutral API cannot yet express.
     "VulkanNative.h"
-    # Pipeline creation stays Vulkan-side until the binding model is neutral.
-    # D8 deferred this; D15 un-defers it now that D14 neutralises binding.
-    # Removed by Stage 7.5 steps 6 (graphics) and 7 (compute).
-    "PipelineBuilder.h"
-    "ComputePipelineBuilder.h"
-    # Descriptors are deliberately not abstracted in Stage 5 (D7); this is
-    # isolated, not neutral. D7 expected bindless to remove it; D14 supersedes
-    # that and neutralises binding directly, so it goes at Stage 7.5 steps 4-5.
-    "DescriptorAllocator.h"
-    # Names Vulkan objects the application still creates for itself. Shrinks as
-    # those move behind the RHI; it is a template, so it cannot move to src/.
-    "DebugNames.h"
     # Pure functions over surface query results. Its only production caller is
     # now SwapchainTarget, inside the module, so this could move to src/vulkan/
     # and shrink the list. It is kept here deliberately: the functions are pure
@@ -152,11 +145,7 @@ set(transitional_headers
     # surface into states a real display cannot be asked for on demand, a zero
     # extent among them. Reconsider if it grows past choosing surface
     # parameters, or if it acquires state or a device dependency.
-    "SwapchainUtil.h"
-    # Begin/submit/wait for a one-shot command buffer. The remaining caller
-    # records a compute dispatch, so it needs both halves: submission behind
-    # IDevice (Stage 7.5 step 2) and Dispatch on ICommandList (step 11).
-    "CommandListUtil.h")
+    "SwapchainUtil.h")
 
 set(transitional_dir "${neutral_dir}/vulkan")
 file(GLOB transitional_present RELATIVE "${transitional_dir}" "${transitional_dir}/*.h")
@@ -206,23 +195,8 @@ endforeach()
 
 set(transitional_allowlist
     "engine/editor/src/VulkanUiBackend.cpp|VulkanNative.h|ImGui's backend takes instance/device/queue and a VkCommandBuffer by value (D9)"
-    "engine/engine/src/Engine.cpp|PipelineBuilder.h|Graphics pipeline creation is Vulkan-side until D15 (step 6)"
-    "engine/engine/src/Engine.cpp|VulkanNative.h|The frame loop still records raw draws — last use goes at step 10"
-    "engine/engine/src/Engine.cpp|DebugNames.h|Names the pools, sets and sync objects the engine still owns (step 12)"
-    "engine/engine/src/CloudSystem.cpp|VulkanNative.h|Raw dispatch recording needs the device — goes at step 11"
-    "engine/engine/src/CloudSystem.cpp|ComputePipelineBuilder.h|Compute pipeline creation is Vulkan-side until D15 (step 7)"
-    "engine/engine/src/CloudSystem.cpp|CommandListUtil.h|The noise bake is a dispatch, not a copy — needs steps 2 and 11"
-    "engine/engine/src/CloudSystem.cpp|DebugNames.h|Names the bake's pipeline and descriptor set (step 12)"
-    "engine/engine/src/MaterialFactory.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted — bind groups replace them at step 5"
-    "engine/engine/src/MaterialFactory.cpp|VulkanNative.h|Writes descriptor sets directly — bind groups replace this at step 5"
-    "engine/engine/src/MaterialFactory.cpp|DebugNames.h|Names the material set layout (step 5)"
-    "engine/engine/src/PBRMaterial.h|DescriptorAllocator.h|Descriptors are isolated, not abstracted — bind groups replace them at step 5"
-    "engine/engine/src/PBRMaterial.cpp|VulkanNative.h|Writes descriptor sets directly — bind groups replace this at step 5"
-    "engine/engine/src/PBRMaterial.cpp|DebugNames.h|Names the material descriptor set (step 5)"
     "tests/unit/rhi/SwapchainUtilTests.cpp|SwapchainUtil.h|Surface states a real display cannot be put into on demand"
     "tests/gpu/rhi/DeviceTests.cpp|VulkanNative.h|The escape hatch is what these cases assert on"
-    "tests/gpu/rhi/PresentTargetTests.cpp|VulkanNative.h|A frame is recorded neutrally but submitted with the target's semaphores, and the RHI hands out no queue (step 2)"
-    "tests/support/GpuReadback.h|VulkanNative.h|Readback allocates and submits its own command buffer (step 2)"
 )
 
 # Splitting by hand rather than with file(STRINGS), which would turn every
@@ -315,3 +289,106 @@ message(
   STATUS
     "rhi_boundary_check: transitional area is ${transitional_count} header(s), used from "
     "${allowlist_count} site(s) outside the module.")
+
+# ---------------------------------------------------------------------------
+# Check 4: who outside the module may name Vulkan at all.
+#
+# Checks 1-3 govern the RHI's own headers and who reaches into its transitional
+# area. None of them stops engine code naming vk:: types it obtained some other
+# way — and for a long time engine/engine/src/pch.h included vulkan.hpp, so
+# every file in that module had the whole API in scope without an include or an
+# allowlist entry to show for it. The ratchet read "2 headers from 4 sites"
+# while a module quietly depended on Vulkan throughout.
+#
+# So this checks names rather than includes: an include can be avoided, a name
+# cannot. A D3D12-only build has no vk:: at all, so anything naming one is
+# code that build cannot compile, and the list below is the honest count of it.
+#
+# Scope is engine/ (outside engine/rhi/) and apps/. Tests are deliberately
+# exempt: several assert on the backend's own conversions and queue-family
+# rules, which is what unit-testing a backend looks like, and their reach into
+# the transitional area is already governed by check 3.
+#
+# One entry, and it is permanent. If this list ever grows a second, the question
+# to ask is what neutral call is missing -- that is what the last temporary
+# entry turned out to be.
+# ---------------------------------------------------------------------------
+
+set(vulkan_naming_allowlist
+    "engine/editor/src/VulkanUiBackend.cpp|ImGui's Vulkan backend takes a VkFormat, a VkCommandBuffer and raw handles by value (D9). Permanent: a D3D12 build gets a sibling file, not an edit"
+)
+
+file(GLOB_RECURSE naming_scanned "${repo_root}/engine/*.h" "${repo_root}/engine/*.cpp"
+     "${repo_root}/apps/*.h" "${repo_root}/apps/*.cpp")
+
+set(naming_violations "")
+set(naming_matched "")
+
+foreach(scanned IN LISTS naming_scanned)
+  file(RELATIVE_PATH relative_path "${repo_root}" "${scanned}")
+
+  if(relative_path MATCHES "^engine/rhi/")
+    continue()
+  endif()
+
+  set(allowed FALSE)
+  foreach(entry IN LISTS vulkan_naming_allowlist)
+    if(entry MATCHES "^([^|]+)\\|")
+      if(CMAKE_MATCH_1 STREQUAL relative_path)
+        set(allowed TRUE)
+        list(APPEND naming_matched "${entry}")
+        break()
+      endif()
+    endif()
+  endforeach()
+
+  if(allowed)
+    continue()
+  endif()
+
+  read_lines("${scanned}" lines)
+  set(line_number 0)
+  set(in_block 0)
+
+  foreach(line IN LISTS lines)
+    math(EXPR line_number "${line_number} + 1")
+    strip_comments_from_line("${line}" in_block code)
+
+    foreach(pattern IN LISTS banned_patterns)
+      if(code MATCHES "${pattern}")
+        list(APPEND naming_violations "  ${relative_path}:${line_number}: ${code}")
+        break()
+      endif()
+    endforeach()
+  endforeach()
+endforeach()
+
+if(naming_violations)
+  list(JOIN naming_violations "\n" naming_violation_text)
+  message(
+    FATAL_ERROR
+      "rhi_boundary_check: Vulkan named outside engine/rhi/.\n"
+      "${naming_violation_text}\n\n"
+      "Engine and application code talks to the RHI, not to Vulkan. If there is\n"
+      "genuinely no neutral way to say it yet, add an entry to\n"
+      "vulkan_naming_allowlist in cmake/RhiBoundaryCheck.cmake naming the work\n"
+      "that removes it again — and check that a precompiled header is not the\n"
+      "reason the name is available.")
+endif()
+
+foreach(entry IN LISTS vulkan_naming_allowlist)
+  if(NOT entry IN_LIST naming_matched)
+    string(REPLACE "|" " -> " readable "${entry}")
+    message(
+      FATAL_ERROR
+        "rhi_boundary_check: vulkan_naming_allowlist has an entry nothing matches.\n"
+        "  ${readable}\n\n"
+        "The file no longer names Vulkan, so delete the entry. This list is a\n"
+        "ratchet too.")
+  endif()
+endforeach()
+
+list(LENGTH vulkan_naming_allowlist naming_count)
+message(
+  STATUS
+    "rhi_boundary_check: ${naming_count} file(s) outside engine/rhi/ may name Vulkan.")

@@ -4,14 +4,14 @@
 #include <vector>
 
 #include "glm/glm.hpp"
-#include "vulkan/vulkan_raii.hpp"
-
 #include <platform/Paths.h>
 
 #include <rhi/Barrier.h>
+#include <rhi/BindGroup.h>
 #include <rhi/Handles.h>
 #include <rhi/ICommandList.h>
 #include <rhi/IDevice.h>
+#include <rhi/Pipeline.h>
 #include <rhi/PipelineCache.h>
 #include <rhi/UniqueHandle.h>
 
@@ -22,10 +22,8 @@ struct CloudSystemCreateInfo
     Hikari::Rhi::IDevice& RhiDevice;
     Hikari::Rhi::IPipelineCache& PipelineCache;
     const Hikari::Platform::Paths& ContentPaths;
-    vk::raii::DescriptorSetLayout& GlobalSetLayout;
-    vk::raii::DescriptorSetLayout& DepthSetLayout;
-    vk::raii::CommandPool& CommandPool;
-    vk::raii::Queue& ComputeQueue;
+    Hikari::Rhi::BindGroupLayoutHandle GlobalSetLayout;
+    Hikari::Rhi::BindGroupLayoutHandle DepthSetLayout;
     uint32_t SwapchainWidth;
     uint32_t SwapchainHeight;
     uint32_t FramesInFlight;
@@ -59,9 +57,9 @@ public:
      * Returns the barriers recorded, so the caller can account for them in the
      * frame's totals.
      */
-    Hikari::Rhi::BarrierCounts RecordDispatch(vk::raii::CommandBuffer& cmd, uint32_t frameIndex,
-                                              vk::raii::DescriptorSet& globalSet,
-                                              vk::raii::DescriptorSet& depthSet);
+    Hikari::Rhi::BarrierCounts RecordDispatch(Hikari::Rhi::ICommandList& list, uint32_t frameIndex,
+                                              Hikari::Rhi::BindGroupHandle globalGroup,
+                                              Hikari::Rhi::BindGroupHandle depthGroup);
     void Resize(uint32_t width, uint32_t height);
 
     Hikari::Rhi::TextureViewHandle GetOutputView(uint8_t frameIndex) const
@@ -74,20 +72,17 @@ private:
 
     void CreateOutputTextures(uint32_t width, uint32_t height);
     void CreateNoiseTexture();
-    void CreateDescriptorSetLayout();
-    void CreateBakeDescriptorSetLayout();
+    void CreateBindGroupLayouts();
+    void CreateBindGroups();
+    Hikari::Rhi::ShaderModuleHandle LoadShader(const Hikari::Platform::Paths& paths,
+                                               const std::string& name);
     void CreatePipeline(const Hikari::Platform::Paths& paths,
                         Hikari::Rhi::IPipelineCache& pipelineCache,
-                        vk::raii::DescriptorSetLayout& globalSetLayout,
-                        vk::raii::DescriptorSetLayout& depthSetLayout);
+                        Hikari::Rhi::BindGroupLayoutHandle globalLayout,
+                        Hikari::Rhi::BindGroupLayoutHandle depthLayout);
     void CreateBakePipeline(const Hikari::Platform::Paths& paths,
                             Hikari::Rhi::IPipelineCache& pipelineCache);
-    void CreateDescriptorPool();
-    void CreateBakeDescriptorPool();
-    void AllocateDescriptorSets();
-    void AllocateAndWriteBakeDescriptorSet();
-    void WriteDescriptorSets();
-    void BakeNoiseTexture(vk::raii::CommandPool& commandPool, vk::raii::Queue& computeQueue);
+    void BakeNoiseTexture();
     void CreateTextureSampler();
 
 private:
@@ -99,22 +94,19 @@ private:
      */
     Hikari::Rhi::IDevice& m_RhiDevice;
 
-    /**
-     * Borrowed from m_RhiDevice. Still needed because pipelines and descriptors
-     * stay Vulkan-shaped for the whole of Stage 5 (plan D7, D8).
-     */
-    vk::raii::Device& m_Device;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupLayoutHandle> m_SetLayout;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupLayoutHandle> m_BakeSetLayout;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::PipelineLayoutHandle> m_PipelineLayout;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::PipelineLayoutHandle> m_BakePipelineLayout;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::ComputePipelineHandle> m_Pipeline;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::ComputePipelineHandle> m_BakePipeline;
 
-    vk::raii::DescriptorSetLayout m_SetLayout = nullptr;
-    vk::raii::DescriptorSetLayout m_BakeSetLayout = nullptr;
-    vk::raii::DescriptorPool m_DescriptorPool = nullptr;
-    vk::raii::DescriptorPool m_BakeDescriptorPool = nullptr;
-    vk::raii::PipelineLayout m_PipelineLayout = nullptr;
-    vk::raii::PipelineLayout m_BakePipelineLayout = nullptr;
-    vk::raii::Pipeline m_Pipeline = nullptr;
-    vk::raii::Pipeline m_BakePipeline = nullptr;
-    std::vector<vk::raii::DescriptorSet> m_DescriptorSets;
-    vk::raii::DescriptorSet m_BakeDescriptorSet = nullptr;
+    /** One per frame in flight, plus the bake's, which is written once. */
+    std::vector<Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupHandle>> m_BindGroups;
+    Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupHandle> m_BakeBindGroup;
+
+    /** Kept for the run: a pipeline may outlive the bytes it was built from. */
+    std::vector<Hikari::Rhi::UniqueHandle<Hikari::Rhi::ShaderModuleHandle>> m_ShaderModules;
     Hikari::Rhi::UniqueHandle<Hikari::Rhi::SamplerHandle> m_TextureSampler;
 
     std::vector<Texture> m_OutputTextures;

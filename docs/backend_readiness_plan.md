@@ -145,16 +145,45 @@ Agility SDK and a recent driver. Below that the shape is descriptor tables with 
 ranges, which is not the same design. D7's "bindless converges the two APIs" holds at the top
 of the stack and weakens underneath it.
 
-**So:** build a neutral binding model scoped to the layouts that exist today — a global
-uniform set, the material set, the composite set and the depth set, plus the push-constant
-ranges those layouts carry. That maps 1:1 onto a Vulkan descriptor set and a D3D12 descriptor
-table plus root constants.
+**So:** build a neutral binding model scoped to the layouts that exist today, plus the
+push-constant ranges those layouts carry. That maps 1:1 onto a Vulkan descriptor set and a
+D3D12 descriptor table plus root constants.
 
 **Correction from the grill.** The first draft said "four layouts and one range". There are
 **four ranges, not one**, and they span two shader stages: fragment `MaterialData` on the
 opaque and transparent layouts, compute `CloudPushConstants` on the cloud dispatch, and compute
 `BakeConstants` on the noise bake. The composite layout has none. The neutral model must
 therefore express a range's stage, not merely its size. See D23.
+
+**Second correction, found while building step 4: there are six layouts, not four.** The
+original count listed the global, material, composite and depth sets and stopped there.
+`CloudSystem` owns two more of its own, and neither appeared in any step's scope:
+
+| Layout | Bindings | Where |
+|---|---|---|
+| Global | uniform buffer | done, step 4 |
+| Composite | 4 textures + 1 sampler | done, step 4 |
+| Depth | 1 texture, pixel *and* compute | done, step 4 |
+| Material | 3 textures, partially bound | step 5 |
+| **Cloud dispatch** | **storage image + combined image sampler** | **step 11** |
+| **Cloud noise bake** | **storage image** | **step 11** |
+
+Three things follow, and the first is the one that matters.
+
+**`UnorderedAccessTexture` is not optional.** Both cloud layouts bind storage images —
+`RWTexture2D` and `RWTexture3D` in the shaders — and `BindingType` has no value for them. It
+cannot be added when convenient; it is a prerequisite of those sets becoming neutral, which is
+step 11. When it lands the pair reads the way `TextureLayout`'s `ShaderResource` and
+`UnorderedAccess` already do.
+
+**The cloud dispatch set holds a combined image sampler**, which D22 forbids outright. So step
+11 carries a second sampler split, in `clouds.comp.slang`, exactly as step 4 carried the
+composite one.
+
+**The narrowness argument is unaffected, but its arithmetic was wrong.** Six layouts across a
+whole renderer is still narrow, and the ratchet still holds — but a count used as evidence for
+narrowness has to be the real count. The pinned inventory ends at six, not four, and
+`BindGroupLayoutInventoryTests` grows to match at steps 5 and 11 rather than only at step 5.
 
 **What it costs.** `TextureBinding::COUNT` stays 3, so no emissive, occlusion or clearcoat maps
 until either the cap is raised deliberately or step 70 lands. The grill checked what that
@@ -590,11 +619,19 @@ applies to every step here without anything being switched on first.
 ### 1 — Command allocators and command lists
 
 - **Do:** `ICommandAllocator` per queue type, caller-owned, one per frame per recorder, reset
-  as a unit and handing out `ICommandList`s (D19). The engine's seven-per-frame pools plus its
-  generic pool move behind the RHI as allocators. The engine still submits its own lists on its
-  own queue, recording through the escape hatch.
+  as a unit and handing out `ICommandList`s (D19). The engine's seven-per-frame pools move
+  behind the RHI as allocators. The engine still submits its own lists on its own queue,
+  recording through the escape hatch.
 - **Verify:** baseline unchanged, counters unchanged.
 - **Size:** M
+- **Done.** Amended while building: the **generic pool stays raw**, against this step's
+  original wording. `CloudSystem`'s noise bake reaches it through `CommandListUtil`, which
+  begins, submits and waits on a one-shot buffer — so converting it needs submission behind the
+  RHI *and* dispatch recording, which is steps 2 and 11. Forcing it here would have meant
+  handing a raw pool back out of an allocator, widening the escape hatch to narrow it later.
+  One thing came free in the other direction: `CloudSystem::RecordDispatch` now takes an
+  `ICommandList&` rather than a `vk::raii::CommandBuffer&`, since the caller owns the allocator
+  and must begin and end the list anyway.
 
 ### 2 — Submission and fences
 
@@ -602,11 +639,16 @@ applies to every step here without anything being switched on first.
   `FenceHandle` + value (D5, D16). `FenceHandle` becomes a type an interface actually takes.
   The per-frame fences move behind the RHI; the present target's semaphores are passed as
   `SemaphoreHandle` and stay behind `IPresentTarget`.
-- **Retires:** `tests/support/GpuReadback.h`'s and `tests/gpu/rhi/PresentTargetTests.cpp`'s
-  `VulkanNative.h` entries — both are submission and fence waiting rather than recording.
-- **Verify:** baseline unchanged; zero validation errors. `backlog.md`'s "drop the wait
-  semaphore and the suite still passes" experiment should now fail as it is supposed to — see
-  §9, which asks what that experiment actually does today before this step relies on it.
+- **Retires:** `tests/support/GpuReadback.h`'s `VulkanNative.h` entry and
+  `tests/gpu/rhi/ValidationCoverageTests.cpp`'s — both were submission and fence waiting, and
+  both are now fully neutral. 19 sites down to 17.
+- **Not** `tests/gpu/rhi/PresentTargetTests.cpp`'s, against this step's first estimate: its
+  remaining uses are a raw render pass for the clears and a `VkImageView` for the attachment,
+  which are step 3's to remove rather than this step's.
+- **Verify:** baseline unchanged; zero validation errors, and those errors now mean something
+  across submissions — see §9. This is the step where a clean synchronization validation run is
+  load-bearing rather than decorative, because it is the step that moves every submit in the
+  engine.
 - **Size:** L
 
 ### 3 — Rendering scope and dynamic state
@@ -614,9 +656,24 @@ applies to every step here without anything being switched on first.
 - **Do:** a neutral attachment description (view handle, load/store op, clear value),
   `BeginRendering`/`EndRendering`, `SetViewport`, `SetScissor` on `ICommandList` (D17). Nothing
   here depends on the binding model, which is why it precedes the bind groups.
+- **Retires:** `tests/gpu/rhi/PresentTargetTests.cpp`'s `VulkanNative.h` entry, deferred here
+  from step 2. Its clears were a raw render pass and its attachment took a `VkImageView`; both
+  are neutral now, and the file reaches only for `OffscreenTarget` through the module's own
+  sources. 17 sites down to 16.
 - **Verify:** baseline unchanged. The recorders still bind pipelines and draw through the escape
   hatch; only the scope and dynamic state have moved.
 - **Size:** M
+- **Done.** `LoadOp` and `StoreOp` are named for D3D12's beginning- and ending-access types
+  under D13 — `Preserve`/`Clear`/`Discard` rather than Vulkan's load/store vocabulary.
+  `StoreOp` has exactly two values, and that is a correction: it briefly had a third,
+  `NoAccess`, for the transparent pass reading depth it never writes. That was wrong twice
+  over. D3D12's `NO_ACCESS` means the resource is **neither read nor written** and must be
+  paired with a `NO_ACCESS` beginning access, so it describes the one case a depth-reading pass
+  is not; and the fact it was trying to state is already stated by
+  `DepthStencilTarget::bReadOnly`, so keeping both would be two fields able to disagree. The
+  backend derives Vulkan's `STORE_OP_NONE` and the read-only layout from `bReadOnly`, and
+  rejects a read-only target that asks to discard. The ImGui recorder came out fully neutral as
+  a side effect: everything raw it did was open and close a scope.
 
 ### 4 — Bind groups: global, depth and composite
 
@@ -628,13 +685,39 @@ applies to every step here without anything being switched on first.
   only at the resize point that already stalls.
 - **Verify:** baseline unchanged.
 - **Size:** L
+- **Done.** Three things worth knowing.
 
-### 5 — Bind groups: the material set, with the sampler split
+  **D22's sampler split happened here, not at step 5.** The composite layout already held a
+  combined image sampler at binding 3, and `BindingType` has no such value, so the split could
+  not wait: binding 3 became a sampled texture and binding 4 a `Sampler`, and `composite.slang`
+  changed with it. Only the cloud target is sampled — the other three are fetched by texel — so
+  one sampler serves the layout. **Step 5 is correspondingly smaller**: the material set alone.
+
+  **The binding model carries stage visibility per binding**, because the depth group is read by
+  the cloud dispatch as well as by pixel shaders. A graphics-only assumption would not have
+  survived the first layout it met.
+
+  **Two transitional accessors joined `VulkanNative.h`**, both expiring at step 6:
+  `GetDescriptorSet` and `GetDescriptorSetLayout`. Binding a group needs a pipeline layout and
+  creating a pipeline layout needs the raw set layouts, and neither is neutral until D23 makes
+  `PipelineLayoutHandle` real. So the renderer creates its groups through `IDevice` and still
+  binds them itself. **`SetBindGroup` therefore moves to step 6**, against this step's original
+  wording — it cannot exist before the thing it takes as an argument. No allowlist entry moved:
+  every site involved already had one.
+
+  Validation earned its keep twice. It caught the pipeline layouts still naming the deleted
+  raii objects, and then caught a sampled *depth* view being described as
+  `SHADER_READ_ONLY_OPTIMAL` when the barrier had left it in `DEPTH_READ_ONLY_OPTIMAL`. The
+  second is why `VulkanTextureView` now records its aspect: which layout a sampled view wants is
+  a Vulkan rule, not something the neutral description should be made to state.
+
+### 5 — Bind groups: the material set
 
 - **Do:** the material set moves behind the neutral API, and combined image samplers become
   separate texture and sampler bindings (D22) — four shaders (`opaque`, `weightedBlendedOIT`,
   `composite`, `clouds.comp`), `MaterialFactory` and `PBRMaterial`. Both stop writing
-  descriptors directly. The pinned inventory grows to four layouts.
+  descriptors directly. The pinned inventory grows to four layouts, on its way to six — see
+  D14's second correction for the two `CloudSystem` owns.
 - **The partially-bound behaviour must survive the move.** It is what lets an untextured
   material render, and losing it silently would change what the test cubes look like rather
   than failing a build.
@@ -645,6 +728,25 @@ applies to every step here without anything being switched on first.
   step 47's matrix, which are the ones that exercise partial binding. Same sampler state means
   the capture should be pixel-identical, so any movement here is a real defect.
 - **Size:** L
+- **Done.** The neutral layout grew one field for this step: `BindGroupLayoutBinding::bOptional`,
+  which is what lets a slot be left empty. All three material textures set it, the sampler does
+  not, and the bind group description simply omits the maps a material lacks. Vulkan spells the
+  permission `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT`; D3D12 reaches the same place from the
+  other direction, since a descriptor a shader never accesses need not be valid. The flags
+  structure is chained only when a layout actually asks for it.
+
+  The material set carried a second sampler split, like the composite one: three combined image
+  samplers became three textures plus one shared sampler, in `opaque.slang` and
+  `weightedBlendedOIT.slang`.
+
+  **`DescriptorAllocator.h` left the transitional area by moving rather than by deletion.** The
+  RHI itself now allocates bind groups through it, so the header still exists — it just lives in
+  `src/vulkan/` where nothing outside the module can reach it, which is the same outcome the
+  ratchet was measuring. Six allowlist entries went with it: **7 headers from 16 sites down to
+  6 from 10**.
+
+  The pinned inventory is four of six layouts. `CloudSystem`'s two remain, and they need
+  `UnorderedAccessTexture` before they can move — see D14's second correction.
 
 ### 6 — Graphics pipelines and pipeline layouts
 
@@ -657,50 +759,99 @@ applies to every step here without anything being switched on first.
 - **Verify:** baseline unchanged. The pipeline cache still warms — `startupMs` on a second run
   should not regress, which is the only externally visible sign the cache is still working.
 - **Size:** L
+- **Done.** Four notes.
+
+  **`SetPipeline`, `SetBindGroup` and `PushConstants` all landed here**, not at steps 8–11 as
+  written. Each takes a pipeline layout, so none of them could exist before `PipelineLayoutHandle`
+  did — and once it does, leaving those calls raw needs *more* escape-hatch accessors rather than
+  fewer. Steps 8–11 keep vertex and index binding, draws and dispatches, which is a cleaner split
+  by what is being recorded.
+
+  **`Rhi::Format` grew three vertex-attribute formats** — `RG32Float`, `RGB32Float`,
+  `RGBA32Float` — because vertex input needs them and both APIs carry vertex and texture formats
+  in one enum. That expired a unit test's specimen: `ConversionTests` asserted that
+  `eR32G32B32A32Sfloat` was outside the curated set, and its comment said the choice held only
+  "until pipeline creation is neutralized". It now names `eR8G8B8Unorm` instead, and the
+  mappings are spot-checked alongside the others.
+
+  **`DeviceCaps::ShaderExtension`** is how the engine learns which blob to load. The build still
+  emits one module per shader holding both entry points, so the pipeline description names the
+  same module twice with different entry points — legal on Vulkan, not on D3D12. **Splitting the
+  blobs per stage moved to Stage 7.6**, where DXIL emission restructures the shader build anyway;
+  doing it twice would mean touching `cmake/Shaders.cmake` for the same reason in two stages.
+
+  **`PipelineBuilder` is gone**, header and implementation: **5 transitional headers used from 9
+  sites**. `ComputePipelineBuilder` stays until step 7, and the two descriptor accessors stay
+  until steps 7 and 11, because `CloudSystem`'s own layouts are still raw.
 
 ### 7 — Compute pipelines
 
 - **Do:** a neutral compute pipeline description, consuming the same layouts. `CloudSystem`'s
   dispatch pipeline and its noise-bake pipeline both move.
-- **Retires:** `ComputePipelineBuilder.h` and `CloudSystem.cpp`'s entry for it.
+- **Retires:** `ComputePipelineBuilder.h` and `CloudSystem.cpp`'s entries for it and for
+  `DebugNames.h`. **4 transitional headers used from 7 sites.**
 - **Verify:** baseline unchanged.
 - **Size:** M
+- **Done.** Larger than M, because of a dependency the plan did not see.
 
-### 8 — The composite recorder
+  **`CloudSystem`'s two bind group layouts moved here, not at step 11.** A compute pipeline
+  needs a pipeline layout, a pipeline layout is built from bind group layouts, and
+  `CreatePipelineLayout` takes handles — so its layouts had to be neutral before its pipelines
+  could be. That pulled in everything D14's second correction had assigned to step 11:
+  `BindingType::UnorderedAccessTexture` for the `RWTexture2D`/`RWTexture3D` storage images, and
+  a third combined-image-sampler split, in `clouds.comp.slang`. **Step 11 shrinks to the
+  dispatch recording it names**, and the pinned inventory is complete at six layouts.
 
-- **Do:** `SetPipeline`, `SetBindGroup`, vertex and index buffer binding, `DrawIndexed`. Move
-  `RecordCompositeCommandBuffer` onto them.
-- **Why first of the four:** one draw, one bind group, no per-batch loop. It is the smallest
-  possible proof that the recording API works before it is applied to anything harder.
-- **Verify:** baseline unchanged.
-- **Size:** M
+  `SetPipeline`, `SetComputeBindGroup` and `Dispatch` are separate compute entry points rather
+  than shared ones, because both APIs keep the two apart — Vulkan by bind point, D3D12 by having
+  `SetComputeRootSignature` and `SetGraphicsRootSignature` be different calls — so one call
+  would have to guess which the caller meant.
 
-### 9 — The opaque recorder
+  **A defect from step 4 surfaced here and is fixed.** The RHI's bind group descriptor pool was
+  sized for uniform buffers, sampled images and samplers, and storage images were the first
+  binding type it had never been asked for. It showed up as two validation *warnings* and a
+  changed `validationWarnings` counter — not an error, because the specification lets an
+  implementation fail to report the out-of-pool condition it should. The pool now carries a size
+  for every `BindingType`.
 
-- **Do:** move `RecordOpaqueCommandBuffer`, including `PushConstants` for `MaterialData` — a
-  neutral call now that a layout is neutral (D14, D23); the Vulkan and D3D12 forms were always
-  1:1 and only the layout blocked it.
-- **Verify:** baseline unchanged. This is the step where an unchanged screenshot is the
-  load-bearing evidence rather than a formality.
-- **Size:** M
+### 8–11 — The recorders
 
-### 10 — The transparent recorder
+Written as four steps, one per recorder, and built as four; committed as one, because after
+steps 6 and 7 each had shrunk to binding geometry and issuing a draw.
 
-- **Do:** move `RecordTransparentCommandBuffer`.
-- **Retires:** `Engine.cpp`'s `VulkanNative.h` entry — the last of its uses goes here.
-- **Verify:** baseline unchanged. See §10 on why the transparent path is the noisiest place in
-  the comparison.
-- **Size:** M
+- **Do:** `SetVertexBuffer`, `SetIndexBuffer`, `SetCullMode` and `DrawIndexed` on `ICommandList`,
+  then move the composite, opaque, transparent and cloud recorders onto them. Composite first:
+  one draw, one bind group, no per-batch loop, so it is the smallest proof the recording API
+  works before it is applied to anything harder.
+- **Retires:** `CommandListUtil.h`, `CloudSystem.cpp`'s two remaining entries, and
+  `Engine.cpp`'s `VulkanNative.h`. **3 transitional headers used from 5 sites.**
+- **Verify:** baseline unchanged, with an unchanged screenshot as the load-bearing evidence
+  rather than a formality.
+- **Size:** M across the four.
+- **Done.** Four things worth recording.
 
-### 11 — The clouds recorder and the noise bake
+  **The compiler found the finish line.** Once the draws were neutral, `-Wunused-but-set-variable`
+  fired on the `cmd` variable in all three surface recorders at once — none of them had any
+  remaining use for a raw command buffer. The same happened to `NativeSet`, `NativeSetLayout` and
+  `NativeView`, the transitional accessors added at steps 4 and 6: each was left with only its
+  own definition, so all three are gone along with the `GetDescriptorSet` and
+  `GetDescriptorSetLayout` hatch functions they wrapped.
 
-- **Do:** `Dispatch` on `ICommandList`. Move `CloudSystem::RecordDispatch` and
-  `BakeNoiseTexture`, and take `vk::raii` references out of `CloudSystemCreateInfo`.
-- **Retires:** `CloudSystem.cpp`'s `VulkanNative.h` and `CommandListUtil.h` entries. The latter
-  needed both step 2 (submission) and this step (dispatch recording), which is why it goes last
-  of the two.
-- **Verify:** baseline unchanged.
-- **Size:** M
+  **The noise bake now submits through the RHI**, which is what retired `CommandListUtil` — it
+  begins, submits and waits on a one-shot buffer, so it needed both submission (step 2) and
+  dispatch recording (step 7) before it could go. With it went the engine's last raw command
+  pool: `CreateCommandPools` and `m_GenericCommandPool` are deleted outright.
+
+  **The bake stays on the graphics queue, deliberately.** Converting it to `QueueType::Compute`
+  looked obvious -- it is a dispatch, and the device has a dedicated compute family -- and would
+  have been wrong: the noise volume is written there and sampled by the frame's dispatch, so it
+  would cross queue families with nothing owning the transfer. The old code passed the graphics
+  queue under the name `ComputeQueue` with a comment saying why; that reasoning now sits at the
+  submit itself.
+
+  **`CloudSystem` holds no Vulkan at all.** It kept a `vk::raii::Device&` since Stage 5 for
+  building pipelines and descriptors; both are neutral now, so the reference, the include and the
+  `using namespace` are gone.
 
 ### 12 — Seal the seam
 
@@ -714,6 +865,23 @@ applies to every step here without anything being switched on first.
   proposed here and taken then.
 - **Verify:** `rhi_boundary_check` passes against the reduced lists; `precommit.sh` green.
 - **Size:** M
+- **Done. 2 transitional headers used from 4 sites**, against 7 from 18 when the stage began.
+  §8 predicted 2 headers from 3 sites; it ended one over, and the extra site was closed
+  immediately afterwards by the format-support query §8 now describes. **The final count is 2
+  headers from 3 sites, exactly as predicted.**
+
+  `VulkanNative.h` lost the RAII accessors, the buffer, view, sampler and semaphore resolvers,
+  `WrapCommandList`, and the two descriptor accessors added at steps 4 and 6. What remains is
+  permanent by design plus one exception: `GetPhysicalDevice`, kept for the depth-format query,
+  because the neutral API has no way to ask whether a format is usable for a given purpose. That
+  is the one thing the seal does not cover, and it is a missing query rather than a leak.
+
+  `DebugNames.h` left the transitional area by moving into `src/vulkan/`, as `DescriptorAllocator.h`
+  did at step 5: the RHI names its own objects with it, so the header lives on where nothing
+  outside can reach it.
+
+  **`Engine.cpp` went from 2,476 lines to 2,159** across the stage, without a single line moving
+  to a new home — every one of those 317 lines is Vulkan the renderer no longer writes.
 
 ---
 
@@ -834,19 +1002,29 @@ Everything that fails the inclusion test in §1, and specifically:
 ## 8. Definition of done
 
 `cmake/RhiBoundaryCheck.cmake` is the measure, because it is already enforced in CI and already
-names the work that removes each entry. Today it holds **7 transitional headers used from 18
-sites** — 18 rather than the first draft's 17, because Stage 7 gave the UI backend an entry of
-its own.
+names the work that removes each entry. Today it holds **7 transitional headers used from 19
+sites** — 17 in the first draft, 18 once Stage 7 gave the UI backend an entry of its own, and 19
+once step 1 added the validation-coverage test, which needs a queue until step 2 hands one out.
 
-The steps account for fifteen of those sites: step 2 two, step 5 six, step 6 one, step 7 one,
-step 10 one, step 11 two, step 12 the two remaining `DebugNames.h` entries. That leaves **2
-headers used from 3 sites**:
+The steps account for sixteen of those sites: step 2 two, step 3 one, step 5 six, step 6 one,
+step 7 one, step 10 one, step 11 two, step 12 the two remaining `DebugNames.h` entries. That leaves **2
+headers used from 3 sites** — or so this predicted. It ended at **4**; the fourth is recorded
+below the table:
 
 | Header | Site | Why it stays |
 |---|---|---|
 | `VulkanNative.h` | `engine/editor/src/VulkanUiBackend.cpp` | ImGui's Vulkan backend takes raw handles. D9 is permanent by design: a D3D12 build gets a sibling file, not an edit |
 | `VulkanNative.h` | `tests/gpu/rhi/DeviceTests.cpp` | The escape hatch is what those cases assert on |
 | `SwapchainUtil.h` | `tests/unit/rhi/SwapchainUtilTests.cpp` | Deliberate, and argued in the check itself: the functions are pure and device-free so they can be unit tested, and `src/vulkan/` is on a PRIVATE include path a test cannot reach |
+
+
+**A fourth site outlived the stage by a few hours and is now gone.** `Engine.cpp` reached for
+`GetPhysicalDevice` to query `VkFormatProperties` for a usable depth format, because the neutral
+API could not be asked whether a format was usable for a purpose. It can now:
+`IDevice::IsFormatSupported(Format, TextureUsage)` answers it on both backends —
+`optimalTilingFeatures` on Vulkan, `D3D12_FEATURE_DATA_FORMAT_SUPPORT` on D3D12 — and needed no
+new vocabulary, since `TextureUsage` already says what a texture is for. **The count is the 3
+this section predicted**, and the engine names no Vulkan at all.
 
 Note that `GetNative(ICommandList&)` survives step 12 along with the rest of the ImGui-shaped
 hole — ImGui's backend takes a `VkCommandBuffer` by value, and there is no neutral shape for
@@ -860,17 +1038,28 @@ per-draw constants and pipelines — and they are, near enough, this document's 
 
 ## 9. Open investigations
 
-Neither is a design question. Both are facts to go and establish, and each has a step that
-depends on the answer.
+**1. ~~What does the dropped-semaphore experiment actually do today?~~ Settled 6 September
+2026, and the row it came from was wrong twice over.**
 
-**1. What does the dropped-semaphore experiment actually do today?** `backlog.md` records that
-`tests/gpu/rhi/PresentTargetTests.cpp` asserts a synchronization dependency it cannot detect:
-"with sync validation off, dropping the wait semaphore from an offscreen read still passes".
-But sync validation is *not* off — `validate_sync` is hardcoded `VK_TRUE`, and the GPU tests
-enable validation unconditionally. Either that row predates the `validate_sync` line and is
-stale, or the experiment still passes with sync validation on, which would be considerably more
-interesting than the row describes. **Do this before step 2**, which is the step that would rest
-on the answer, and correct the backlog row either way.
+`backlog.md` claimed the gpu suite asserted a synchronization dependency it could not detect,
+because sync validation was off. Sync validation is not off — `validate_sync` is hardcoded
+`VK_TRUE`. The obvious replacement claim, that syncval cannot see cross-submit hazards here, is
+also wrong: a read-after-write on a *buffer* split across two submissions to one queue, with no
+barrier, semaphore or fence between them, is reported as `vkQueueSubmit(): READ_AFTER_WRITE
+hazard detected`, naming both command buffers and both submits.
+
+**So the offscreen read has no hazard to find.** Dropping its wait semaphore leaves the suite
+green because a barrier and submission order were already supplying the dependency the
+semaphore was being credited with. Buffers were the discriminating case: an image carries layout
+transitions, which are themselves ordered against other transitions on the same queue, so an
+image test can pass for a reason unrelated to hazard detection. That is why the earlier attempt
+— weakening the readback barrier's source scope — proved nothing either way.
+
+`tests/gpu/rhi/ValidationCoverageTests.cpp` is what came out of it: the hazard above, committed
+deliberately, asserting that validation *reported* it and then clearing the counters. It was
+checked against its own failure — remove the hazard and the case fails — so it is a positive
+control rather than another assertion that cannot fail. Every "zero validation errors" claim in
+the gpu suite now rests on something.
 
 **2. What does Slang's DXIL path require?** Profile and target flags, whether a separate
 validator is needed, and what the emitted DXIL needs at load time. Determines the size of Stage
@@ -928,6 +1117,10 @@ What that means in practice:
 - D26 is the exception that should **not** live here permanently. It is test strategy that
   applies to any two renderers, including two D3D12 driver versions, so it also lands in the
   architecture plan's Part III and outlives this document.
-- If `rhi_extraction_plan.md` is retired at step 12, this document is the natural place for
-  D0–D13 to land, which would put the whole D-series back in one file and make the numbering
-  continuity in §2 pay off.
+- **Both plans retire together, into one permanent `docs/rhi.md`.** Decided at step 12, along
+  with the decision not to do it yet. This document is not the host: it is a stage plan that
+  happens to carry decisions, and so is `rhi_extraction_plan.md`. The whole D-series — D0–D26,
+  less the two superseded — belongs in a file kept for the lifetime of the project, with both
+  step lists dropped and `rhi_extraction_plan.md` §10's promotion list as the outline.
+  The numbering continuity §2 was careful about is what makes that a merge rather than a
+  rewrite.

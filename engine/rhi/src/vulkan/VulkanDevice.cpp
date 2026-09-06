@@ -16,11 +16,14 @@
 
 #include <core/Log.h>
 
-#include <rhi/vulkan/DebugNames.h>
+#include "vulkan/DebugNames.h"
 
 #include "vulkan/OffscreenTarget.h"
 #include "vulkan/SwapchainTarget.h"
+#include "vulkan/VulkanCommandAllocator.h"
+#include "vulkan/VulkanCommandList.h"
 #include "vulkan/VulkanConversions.h"
+#include "vulkan/VulkanPipeline.h"
 #include "vulkan/VulkanPipelineCache.h"
 #include "vulkan/VulkanUploadContext.h"
 
@@ -148,6 +151,7 @@ VulkanDevice::VulkanDevice(const DeviceDesc& desc)
     m_Caps.bPresentSupported = desc.Requirements.bPresent;
     m_Caps.bHasDedicatedComputeQueue = m_QueueFamilies.IsDedicated(QueueType::Compute);
     m_Caps.bHasDedicatedCopyQueue = m_QueueFamilies.IsDedicated(QueueType::Copy);
+    m_Caps.ShaderExtension = "spv";
 }
 
 VulkanDevice::~VulkanDevice()
@@ -159,11 +163,14 @@ VulkanDevice::~VulkanDevice()
     // resources through handles is that the count is knowable. Reported rather
     // than asserted so that a shutdown already unwinding from an error is not
     // made worse.
-    const std::array<std::pair<const char*, uint32_t>, 4> live{
+    const std::array<std::pair<const char*, uint32_t>, 7> live{
         std::pair{"buffer", m_Buffers.Size()},
         std::pair{"texture", m_Textures.Size()},
         std::pair{"texture view", m_TextureViews.Size()},
         std::pair{"sampler", m_Samplers.Size()},
+        std::pair{"fence", m_Fences.Size()},
+        std::pair{"bind group layout", m_BindGroupLayouts.Size()},
+        std::pair{"bind group", m_BindGroups.Size()},
     };
 
     bool bAnyLive = false;
@@ -182,13 +189,23 @@ VulkanDevice::~VulkanDevice()
     if (!bAnyLive)
     {
         Core::LogMsg(Core::LogSeverity::Info, LogRhi,
-                     "Device destroyed with 0 live buffers, textures, texture views and samplers.");
+                     "Device destroyed with 0 live buffers, textures, texture views, samplers, "
+                     "fences and bind groups.");
     }
 }
 
 void VulkanDevice::WaitIdle()
 {
     m_Device.waitIdle();
+}
+
+uint32_t VulkanDevice::GetQueueFamily(QueueType role) const
+{
+    // Mirrors GetQueue exactly, and must keep doing so.
+    if (role == QueueType::Copy && *m_CopyQueue)
+        return m_QueueFamilies.Copy;
+
+    return m_QueueFamilies.Graphics;
 }
 
 vk::raii::Queue& VulkanDevice::GetQueue(QueueType role)
@@ -377,7 +394,7 @@ TextureViewHandle VulkanDevice::CreateTextureView(const TextureViewDesc& desc)
                                                                   .baseArrayLayer = desc.BaseLayer,
                                                                   .layerCount = desc.LayerCount}};
 
-    VulkanTextureView view{vk::raii::ImageView(m_Device, createInfo)};
+    VulkanTextureView view{vk::raii::ImageView(m_Device, createInfo), aspect};
 
     if (!desc.DebugName.empty())
     {
@@ -480,6 +497,12 @@ std::unique_ptr<IUploadContext> VulkanDevice::CreateUploadContext(const UploadCo
     return std::make_unique<VulkanUploadContext>(*this, desc);
 }
 
+std::unique_ptr<ICommandAllocator>
+VulkanDevice::CreateCommandAllocator(const CommandAllocatorDesc& desc)
+{
+    return std::make_unique<VulkanCommandAllocator>(*this, desc);
+}
+
 std::unique_ptr<IPipelineCache> VulkanDevice::CreatePipelineCache(const PipelineCacheDesc& desc)
 {
     return std::make_unique<VulkanPipelineCache>(m_Device, m_PhysicalDevice.getProperties(), desc);
@@ -525,6 +548,659 @@ vk::Semaphore VulkanDevice::GetSemaphore(SemaphoreHandle handle) const
 {
     const VulkanSemaphore* pSemaphore = m_Semaphores.Get(handle);
     return pSemaphore ? *pSemaphore->Semaphore : vk::Semaphore{};
+}
+
+namespace
+{
+vk::DescriptorType ToVkDescriptorType(BindingType type)
+{
+    switch (type)
+    {
+        case BindingType::UniformBuffer:
+            return vk::DescriptorType::eUniformBuffer;
+        case BindingType::Texture:
+            return vk::DescriptorType::eSampledImage;
+        case BindingType::UnorderedAccessTexture:
+            return vk::DescriptorType::eStorageImage;
+        case BindingType::Sampler:
+            return vk::DescriptorType::eSampler;
+    }
+
+    throw std::runtime_error("Rhi::VulkanDevice: unmapped BindingType.");
+}
+
+} // namespace
+
+BindGroupLayoutHandle VulkanDevice::CreateBindGroupLayout(const BindGroupLayoutDesc& desc)
+{
+    std::vector<vk::DescriptorSetLayoutBinding> bindings;
+    bindings.reserve(desc.Bindings.size());
+    for (const BindGroupLayoutBinding& binding : desc.Bindings)
+    {
+        bindings.push_back(
+            vk::DescriptorSetLayoutBinding{.binding = binding.Slot,
+                                           .descriptorType = ToVkDescriptorType(binding.Type),
+                                           .descriptorCount = 1u,
+                                           .stageFlags = ToVk(binding.Visibility)});
+    }
+
+    // Per-binding flags are chained only when something asks for them: an empty
+    // flags array is legal but says nothing, and a layout that never needs
+    // partial binding should not be requesting a feature to get it.
+    std::vector<vk::DescriptorBindingFlags> bindingFlags;
+    bindingFlags.reserve(desc.Bindings.size());
+    bool bAnyOptional = false;
+    for (const BindGroupLayoutBinding& binding : desc.Bindings)
+    {
+        bindingFlags.push_back(
+            binding.bOptional
+                ? vk::DescriptorBindingFlags{vk::DescriptorBindingFlagBits::ePartiallyBound}
+                : vk::DescriptorBindingFlags{});
+        bAnyOptional = bAnyOptional || binding.bOptional;
+    }
+
+    const vk::DescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
+        .bindingCount = static_cast<uint32_t>(bindingFlags.size()),
+        .pBindingFlags = bindingFlags.data()};
+
+    const vk::DescriptorSetLayoutCreateInfo createInfo{.pNext = bAnyOptional ? &flagsInfo : nullptr,
+                                                       .bindingCount =
+                                                           static_cast<uint32_t>(bindings.size()),
+                                                       .pBindings = bindings.data()};
+
+    VulkanBindGroupLayout layout{vk::raii::DescriptorSetLayout(m_Device, createInfo)};
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *layout.Layout, vk::ObjectType::eDescriptorSetLayout,
+                       desc.DebugName.c_str());
+    }
+
+    return m_BindGroupLayouts.Create(std::move(layout));
+}
+
+void VulkanDevice::Destroy(BindGroupLayoutHandle handle)
+{
+    if (m_BindGroupLayouts.Release(handle))
+        return;
+
+    ReportDiagnostic(DiagnosticSeverity::Error,
+                     std::format("Rhi::VulkanDevice::Destroy(BindGroupLayoutHandle): handle "
+                                 "{:#010x} is stale or was never valid.",
+                                 handle.Value));
+}
+
+BindGroupHandle VulkanDevice::CreateBindGroup(const BindGroupDesc& desc)
+{
+    const VulkanBindGroupLayout* pLayout = m_BindGroupLayouts.Get(desc.Layout);
+    if (pLayout == nullptr)
+    {
+        ReportStaleHandle(std::format("Rhi::VulkanDevice::CreateBindGroup: layout {:#010x} is "
+                                      "stale or was never valid.",
+                                      desc.Layout.Value));
+        return BindGroupHandle{};
+    }
+
+    VulkanBindGroup group{m_BindGroupAllocator->Allocate(*pLayout->Layout)};
+
+    // Written once, here, and never again: a group is immutable (plan D20), so
+    // this is the only point at which its descriptors are filled in.
+    std::vector<vk::DescriptorBufferInfo> bufferInfos(desc.Bindings.size());
+    std::vector<vk::DescriptorImageInfo> imageInfos(desc.Bindings.size());
+    std::vector<vk::WriteDescriptorSet> writes;
+    writes.reserve(desc.Bindings.size());
+
+    for (size_t i = 0; i < desc.Bindings.size(); i++)
+    {
+        const BindGroupBinding& binding = desc.Bindings[i];
+        vk::WriteDescriptorSet write{.dstSet = *group.Set,
+                                     .dstBinding = binding.Slot,
+                                     .dstArrayElement = 0u,
+                                     .descriptorCount = 1u,
+                                     .descriptorType = ToVkDescriptorType(binding.Type)};
+
+        switch (binding.Type)
+        {
+            case BindingType::UniformBuffer:
+                bufferInfos[i] = vk::DescriptorBufferInfo{
+                    .buffer = GetBuffer(binding.Buffer), .offset = 0u, .range = VK_WHOLE_SIZE};
+                write.pBufferInfo = &bufferInfos[i];
+                break;
+            case BindingType::Texture:
+            {
+                // A sampled depth view reads from DEPTH_READ_ONLY_OPTIMAL, not
+                // from SHADER_READ_ONLY_OPTIMAL. Which one is a Vulkan layout
+                // rule rather than anything the caller said, so it comes from
+                // the view's aspect.
+                const VulkanTextureView* pView = m_TextureViews.Get(binding.View);
+                const bool bDepth = pView != nullptr && Any(pView->Aspect & TextureAspect::Depth);
+                imageInfos[i] = vk::DescriptorImageInfo{
+                    .imageView = GetImageView(binding.View),
+                    .imageLayout = bDepth ? vk::ImageLayout::eDepthReadOnlyOptimal
+                                          : vk::ImageLayout::eShaderReadOnlyOptimal};
+                write.pImageInfo = &imageInfos[i];
+                break;
+            }
+            case BindingType::UnorderedAccessTexture:
+                // General, not ShaderReadOnly: a storage image is written, and
+                // both APIs need the resource in the state that permits it.
+                imageInfos[i] = vk::DescriptorImageInfo{.imageView = GetImageView(binding.View),
+                                                        .imageLayout = vk::ImageLayout::eGeneral};
+                write.pImageInfo = &imageInfos[i];
+                break;
+            case BindingType::Sampler:
+                imageInfos[i] = vk::DescriptorImageInfo{.sampler = GetSampler(binding.Sampler)};
+                write.pImageInfo = &imageInfos[i];
+                break;
+        }
+
+        writes.push_back(write);
+    }
+
+    m_Device.updateDescriptorSets(writes, nullptr);
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *group.Set, vk::ObjectType::eDescriptorSet,
+                       desc.DebugName.c_str());
+    }
+
+    return m_BindGroups.Create(std::move(group));
+}
+
+void VulkanDevice::Destroy(BindGroupHandle handle)
+{
+    if (m_BindGroups.Release(handle))
+        return;
+
+    ReportDiagnostic(DiagnosticSeverity::Error,
+                     std::format("Rhi::VulkanDevice::Destroy(BindGroupHandle): handle {:#010x} is "
+                                 "stale or was never valid.",
+                                 handle.Value));
+}
+
+vk::DescriptorSetLayout VulkanDevice::GetDescriptorSetLayout(BindGroupLayoutHandle handle) const
+{
+    const VulkanBindGroupLayout* pLayout = m_BindGroupLayouts.Get(handle);
+    return pLayout ? *pLayout->Layout : vk::DescriptorSetLayout{};
+}
+
+vk::DescriptorSet VulkanDevice::GetDescriptorSet(BindGroupHandle handle) const
+{
+    const VulkanBindGroup* pGroup = m_BindGroups.Get(handle);
+    return pGroup ? *pGroup->Set : vk::DescriptorSet{};
+}
+
+namespace
+{
+vk::BlendFactor ToVkBlendFactor(BlendFactor factor)
+{
+    switch (factor)
+    {
+        case BlendFactor::Zero:
+            return vk::BlendFactor::eZero;
+        case BlendFactor::One:
+            return vk::BlendFactor::eOne;
+        case BlendFactor::OneMinusSrcColor:
+            return vk::BlendFactor::eOneMinusSrcColor;
+    }
+
+    throw std::runtime_error("Rhi::VulkanDevice: unmapped BlendFactor.");
+}
+
+vk::BlendOp ToVkBlendOp(BlendOp op)
+{
+    switch (op)
+    {
+        case BlendOp::Add:
+            return vk::BlendOp::eAdd;
+    }
+
+    throw std::runtime_error("Rhi::VulkanDevice: unmapped BlendOp.");
+}
+
+} // namespace
+
+bool VulkanDevice::IsFormatSupported(Format format, TextureUsage usage) const
+{
+    // Optimal tiling only. Nothing in this engine creates a linearly tiled
+    // image, and a query that offered the choice would be offering something no
+    // caller can act on -- D3D12 has no tiling concept to expose.
+    const vk::FormatProperties properties = m_PhysicalDevice.getFormatProperties(ToVk(format));
+    const vk::FormatFeatureFlags required = ToVkFormatFeatures(usage);
+
+    return (properties.optimalTilingFeatures & required) == required;
+}
+
+PipelineLayoutHandle VulkanDevice::CreatePipelineLayout(const PipelineLayoutDesc& desc)
+{
+    std::vector<vk::DescriptorSetLayout> setLayouts;
+    setLayouts.reserve(desc.BindGroupLayouts.size());
+    for (const BindGroupLayoutHandle handle : desc.BindGroupLayouts)
+        setLayouts.push_back(GetDescriptorSetLayout(handle));
+
+    std::vector<vk::PushConstantRange> ranges;
+    ranges.reserve(desc.PushConstantRanges.size());
+    for (const PushConstantRange& range : desc.PushConstantRanges)
+    {
+        ranges.push_back(vk::PushConstantRange{
+            .stageFlags = ToVk(range.Stages), .offset = range.Offset, .size = range.Size});
+    }
+
+    const vk::PipelineLayoutCreateInfo createInfo{
+        .setLayoutCount = static_cast<uint32_t>(setLayouts.size()),
+        .pSetLayouts = setLayouts.data(),
+        .pushConstantRangeCount = static_cast<uint32_t>(ranges.size()),
+        .pPushConstantRanges = ranges.data()};
+
+    VulkanPipelineLayout layout{vk::raii::PipelineLayout(m_Device, createInfo)};
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *layout.Layout, vk::ObjectType::ePipelineLayout,
+                       desc.DebugName.c_str());
+    }
+
+    return m_PipelineLayouts.Create(std::move(layout));
+}
+
+void VulkanDevice::Destroy(PipelineLayoutHandle handle)
+{
+    if (m_PipelineLayouts.Release(handle))
+        return;
+
+    ReportStaleHandle(std::format("Rhi::VulkanDevice::Destroy(PipelineLayoutHandle): handle "
+                                  "{:#010x} is stale or was never valid.",
+                                  handle.Value));
+}
+
+ShaderModuleHandle VulkanDevice::CreateShaderModule(const ShaderModuleDesc& desc)
+{
+    // SPIR-V is consumed as uint32_t, so the byte span has to be a whole number
+    // of words. A blob that is not is truncated rather than rejected by the
+    // driver, which fails much later and much less clearly.
+    if (desc.Bytes.empty() || desc.Bytes.size() % sizeof(uint32_t) != 0u)
+    {
+        throw std::runtime_error(
+            std::format("Rhi::IDevice::CreateShaderModule: '{}' is {} byte(s), which is not a "
+                        "whole number of SPIR-V words.",
+                        desc.DebugName, desc.Bytes.size()));
+    }
+
+    const vk::ShaderModuleCreateInfo createInfo{
+        .codeSize = desc.Bytes.size(),
+        .pCode = reinterpret_cast<const uint32_t*>(desc.Bytes.data())};
+
+    VulkanShaderModule module{vk::raii::ShaderModule(m_Device, createInfo)};
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *module.Module, vk::ObjectType::eShaderModule,
+                       desc.DebugName.c_str());
+    }
+
+    return m_ShaderModules.Create(std::move(module));
+}
+
+void VulkanDevice::Destroy(ShaderModuleHandle handle)
+{
+    if (m_ShaderModules.Release(handle))
+        return;
+
+    ReportStaleHandle(std::format("Rhi::VulkanDevice::Destroy(ShaderModuleHandle): handle "
+                                  "{:#010x} is stale or was never valid.",
+                                  handle.Value));
+}
+
+GraphicsPipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& desc,
+                                                            IPipelineCache& cache)
+{
+    const VulkanShaderModule* pVertex = m_ShaderModules.Get(desc.VertexShader.Module);
+    const VulkanShaderModule* pPixel = m_ShaderModules.Get(desc.PixelShader.Module);
+    if (pVertex == nullptr || pPixel == nullptr)
+    {
+        throw std::runtime_error(
+            std::format("Rhi::IDevice::CreateGraphicsPipeline: '{}' names a stale shader module.",
+                        desc.DebugName));
+    }
+
+    const std::array stages{
+        vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eVertex,
+                                          .module = *pVertex->Module,
+                                          .pName = desc.VertexShader.EntryPoint.c_str()},
+        vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eFragment,
+                                          .module = *pPixel->Module,
+                                          .pName = desc.PixelShader.EntryPoint.c_str()}};
+
+    std::vector<vk::VertexInputBindingDescription> bindings;
+    bindings.reserve(desc.VertexBuffers.size());
+    for (const VertexBufferLayout& buffer : desc.VertexBuffers)
+    {
+        bindings.push_back(vk::VertexInputBindingDescription{
+            .binding = buffer.Slot,
+            .stride = buffer.Stride,
+            .inputRate = buffer.Rate == VertexInputRate::Instance ? vk::VertexInputRate::eInstance
+                                                                  : vk::VertexInputRate::eVertex});
+    }
+
+    std::vector<vk::VertexInputAttributeDescription> attributes;
+    attributes.reserve(desc.VertexAttributes.size());
+    for (const VertexAttribute& attribute : desc.VertexAttributes)
+    {
+        attributes.push_back(
+            vk::VertexInputAttributeDescription{.location = attribute.Location,
+                                                .binding = attribute.Slot,
+                                                .format = ToVk(attribute.AttributeFormat),
+                                                .offset = attribute.Offset});
+    }
+
+    const vk::PipelineVertexInputStateCreateInfo vertexInput{
+        .vertexBindingDescriptionCount = static_cast<uint32_t>(bindings.size()),
+        .pVertexBindingDescriptions = bindings.data(),
+        .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size()),
+        .pVertexAttributeDescriptions = attributes.data()};
+
+    const vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
+        .topology = vk::PrimitiveTopology::eTriangleList};
+
+    const vk::PipelineViewportStateCreateInfo viewport{.viewportCount = 1u, .scissorCount = 1u};
+
+    const vk::PipelineRasterizationStateCreateInfo rasterizer{.polygonMode = vk::PolygonMode::eFill,
+                                                              .cullMode = ToVk(desc.Cull),
+                                                              .frontFace =
+                                                                  vk::FrontFace::eCounterClockwise,
+                                                              .lineWidth = 1.f};
+
+    const vk::PipelineMultisampleStateCreateInfo multisampling{.rasterizationSamples =
+                                                                   vk::SampleCountFlagBits::e1};
+
+    const vk::PipelineDepthStencilStateCreateInfo depthStencil{
+        .depthTestEnable = desc.Depth.bTest ? vk::True : vk::False,
+        .depthWriteEnable = desc.Depth.bWrite ? vk::True : vk::False,
+        .depthCompareOp = ToVk(desc.Depth.Compare)};
+
+    std::vector<vk::PipelineColorBlendAttachmentState> blends;
+    blends.reserve(desc.RenderTargetBlends.size());
+    for (const RenderTargetBlend& blend : desc.RenderTargetBlends)
+    {
+        blends.push_back(vk::PipelineColorBlendAttachmentState{
+            .blendEnable = blend.bEnable ? vk::True : vk::False,
+            .srcColorBlendFactor = ToVkBlendFactor(blend.SrcColor),
+            .dstColorBlendFactor = ToVkBlendFactor(blend.DstColor),
+            .colorBlendOp = ToVkBlendOp(blend.ColorOp),
+            .srcAlphaBlendFactor = ToVkBlendFactor(blend.SrcAlpha),
+            .dstAlphaBlendFactor = ToVkBlendFactor(blend.DstAlpha),
+            .alphaBlendOp = ToVkBlendOp(blend.AlphaOp),
+            .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                              vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA});
+    }
+
+    const vk::PipelineColorBlendStateCreateInfo colorBlending{
+        .attachmentCount = static_cast<uint32_t>(blends.size()), .pAttachments = blends.data()};
+
+    // Viewport and scissor are always dynamic (see ICommandList); cull is dynamic
+    // only when the caller says so, because a pipeline that never needs it should
+    // not pay for a state token per draw.
+    std::vector<vk::DynamicState> dynamicStates{vk::DynamicState::eViewport,
+                                                vk::DynamicState::eScissor};
+    if (desc.bDynamicCull)
+        dynamicStates.push_back(vk::DynamicState::eCullMode);
+
+    const vk::PipelineDynamicStateCreateInfo dynamicState{
+        .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+        .pDynamicStates = dynamicStates.data()};
+
+    std::vector<vk::Format> colorFormats;
+    colorFormats.reserve(desc.RenderTargetFormats.size());
+    for (const Format format : desc.RenderTargetFormats)
+        colorFormats.push_back(ToVk(format));
+
+    const vk::PipelineRenderingCreateInfo renderingInfo{
+        .colorAttachmentCount = static_cast<uint32_t>(colorFormats.size()),
+        .pColorAttachmentFormats = colorFormats.data(),
+        .depthAttachmentFormat = ToVk(desc.DepthFormat)};
+
+    const vk::GraphicsPipelineCreateInfo createInfo{.pNext = &renderingInfo,
+                                                    .stageCount =
+                                                        static_cast<uint32_t>(stages.size()),
+                                                    .pStages = stages.data(),
+                                                    .pVertexInputState = &vertexInput,
+                                                    .pInputAssemblyState = &inputAssembly,
+                                                    .pViewportState = &viewport,
+                                                    .pRasterizationState = &rasterizer,
+                                                    .pMultisampleState = &multisampling,
+                                                    .pDepthStencilState = &depthStencil,
+                                                    .pColorBlendState = &colorBlending,
+                                                    .pDynamicState = &dynamicState,
+                                                    .layout = GetPipelineLayout(desc.Layout)};
+
+    VulkanGraphicsPipeline pipeline{
+        vk::raii::Pipeline(m_Device, GetVkPipelineCache(&cache), createInfo)};
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *pipeline.Pipeline, vk::ObjectType::ePipeline,
+                       desc.DebugName.c_str());
+    }
+
+    return m_GraphicsPipelines.Create(std::move(pipeline));
+}
+
+void VulkanDevice::Destroy(GraphicsPipelineHandle handle)
+{
+    if (m_GraphicsPipelines.Release(handle))
+        return;
+
+    ReportStaleHandle(std::format("Rhi::VulkanDevice::Destroy(GraphicsPipelineHandle): handle "
+                                  "{:#010x} is stale or was never valid.",
+                                  handle.Value));
+}
+
+ComputePipelineHandle VulkanDevice::CreateComputePipeline(const ComputePipelineDesc& desc,
+                                                          IPipelineCache& cache)
+{
+    const VulkanShaderModule* pShader = m_ShaderModules.Get(desc.Shader.Module);
+    if (pShader == nullptr)
+    {
+        throw std::runtime_error(
+            std::format("Rhi::IDevice::CreateComputePipeline: '{}' names a stale shader module.",
+                        desc.DebugName));
+    }
+
+    const vk::ComputePipelineCreateInfo createInfo{
+        .stage = vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eCompute,
+                                                   .module = *pShader->Module,
+                                                   .pName = desc.Shader.EntryPoint.c_str()},
+        .layout = GetPipelineLayout(desc.Layout)};
+
+    VulkanComputePipeline pipeline{
+        vk::raii::Pipeline(m_Device, GetVkPipelineCache(&cache), createInfo)};
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *pipeline.Pipeline, vk::ObjectType::ePipeline,
+                       desc.DebugName.c_str());
+    }
+
+    return m_ComputePipelines.Create(std::move(pipeline));
+}
+
+void VulkanDevice::Destroy(ComputePipelineHandle handle)
+{
+    if (m_ComputePipelines.Release(handle))
+        return;
+
+    ReportStaleHandle(std::format("Rhi::VulkanDevice::Destroy(ComputePipelineHandle): handle "
+                                  "{:#010x} is stale or was never valid.",
+                                  handle.Value));
+}
+
+vk::Pipeline VulkanDevice::GetPipeline(ComputePipelineHandle handle) const
+{
+    const VulkanComputePipeline* pPipeline = m_ComputePipelines.Get(handle);
+    return pPipeline ? *pPipeline->Pipeline : vk::Pipeline{};
+}
+
+vk::PipelineLayout VulkanDevice::GetPipelineLayout(PipelineLayoutHandle handle) const
+{
+    const VulkanPipelineLayout* pLayout = m_PipelineLayouts.Get(handle);
+    return pLayout ? *pLayout->Layout : vk::PipelineLayout{};
+}
+
+vk::Pipeline VulkanDevice::GetPipeline(GraphicsPipelineHandle handle) const
+{
+    const VulkanGraphicsPipeline* pPipeline = m_GraphicsPipelines.Get(handle);
+    return pPipeline ? *pPipeline->Pipeline : vk::Pipeline{};
+}
+
+FenceHandle VulkanDevice::CreateFence(const FenceDesc& desc)
+{
+    const vk::StructureChain<vk::SemaphoreCreateInfo, vk::SemaphoreTypeCreateInfo> createInfo{
+        {}, {.semaphoreType = vk::SemaphoreType::eTimeline, .initialValue = desc.InitialValue}};
+
+    VulkanFence fence{vk::raii::Semaphore(m_Device, createInfo.get<vk::SemaphoreCreateInfo>())};
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *fence.Timeline, vk::ObjectType::eSemaphore,
+                       desc.DebugName.c_str());
+    }
+
+    return m_Fences.Create(std::move(fence));
+}
+
+void VulkanDevice::Destroy(FenceHandle handle)
+{
+    if (m_Fences.Release(handle))
+        return;
+
+    ReportDiagnostic(DiagnosticSeverity::Error,
+                     std::format("Rhi::VulkanDevice::Destroy(FenceHandle): handle {:#010x} is "
+                                 "stale or was never valid; it may have been destroyed already.",
+                                 handle.Value));
+}
+
+void VulkanDevice::WaitForFence(FenceHandle handle, uint64_t value)
+{
+    const VulkanFence* pFence = m_Fences.Get(handle);
+    if (pFence == nullptr)
+    {
+        ReportStaleHandle(std::format(
+            "Rhi::VulkanDevice::WaitForFence: handle {:#010x} is stale or was never valid.",
+            handle.Value));
+        return;
+    }
+
+    const vk::Semaphore timeline = *pFence->Timeline;
+    const vk::SemaphoreWaitInfo waitInfo{
+        .semaphoreCount = 1u, .pSemaphores = &timeline, .pValues = &value};
+
+    const vk::Result result =
+        m_Device.waitSemaphores(waitInfo, std::numeric_limits<uint64_t>::max());
+    if (result != vk::Result::eSuccess)
+        throw std::runtime_error("Rhi::VulkanDevice::WaitForFence: the wait did not succeed.");
+}
+
+void VulkanDevice::Submit(const SubmitDesc& desc)
+{
+    // Fixed capacities rather than per-submit allocations: this runs once per
+    // frame per queue, and the counts are bounded by what the frame actually
+    // has. Overflowing throws rather than silently dropping a wait, which is the
+    // failure mode that would corrupt a frame invisibly.
+    constexpr size_t kMaxLists = 16u;
+    constexpr size_t kMaxSyncs = 8u;
+
+    if (desc.CommandLists.size() > kMaxLists ||
+        desc.WaitFences.size() + desc.WaitSemaphores.size() > kMaxSyncs ||
+        desc.SignalFences.size() + desc.SignalSemaphores.size() > kMaxSyncs)
+    {
+        throw std::runtime_error("Rhi::VulkanDevice::Submit: more lists or synchronization "
+                                 "operations than a submission is sized for.");
+    }
+
+    std::array<vk::CommandBufferSubmitInfo, kMaxLists> lists{};
+    for (size_t i = 0; i < desc.CommandLists.size(); i++)
+    {
+        const VulkanCommandList* pList =
+            static_cast<const VulkanCommandList*>(desc.CommandLists[i]);
+
+        // A command buffer may only be submitted to a queue of the family it was
+        // allocated from. Checked here because nothing else will: the driver is
+        // entitled to accept it, and validation does not reliably say otherwise.
+        if (pList->Queue() != desc.Queue)
+        {
+            throw std::runtime_error(
+                "Rhi::VulkanDevice::Submit: a command list allocated for one queue type was "
+                "submitted to another. Its allocator's QueueType must match the submission's.");
+        }
+
+        lists[i] = vk::CommandBufferSubmitInfo{.commandBuffer = pList->Native()};
+    }
+
+    std::array<vk::SemaphoreSubmitInfo, kMaxSyncs> waits{};
+    size_t waitCount = 0u;
+    for (const FenceOperation& wait : desc.WaitFences)
+    {
+        const VulkanFence* pFence = m_Fences.Get(wait.Fence);
+        if (pFence == nullptr)
+        {
+            ReportStaleHandle(std::format(
+                "Rhi::VulkanDevice::Submit: wait fence {:#010x} is stale or was never valid.",
+                wait.Fence.Value));
+            continue;
+        }
+
+        // AllCommands because a fence wait orders whole submissions against one
+        // another: D3D12's queue wait has no stage at all, so narrowing this
+        // would be expressing something the neutral API cannot say.
+        waits[waitCount++] =
+            vk::SemaphoreSubmitInfo{.semaphore = *pFence->Timeline,
+                                    .value = wait.Value,
+                                    .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
+    }
+    for (const SemaphoreHandle handle : desc.WaitSemaphores)
+    {
+        // ColorAttachmentOutput: the only semaphores that reach here guard writes
+        // to an image a present target just handed out, and that is the first
+        // stage which can write one. See SubmitDesc on why the caller does not
+        // name a stage.
+        waits[waitCount++] = vk::SemaphoreSubmitInfo{
+            .semaphore = GetSemaphore(handle),
+            .stageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput};
+    }
+
+    std::array<vk::SemaphoreSubmitInfo, kMaxSyncs> signals{};
+    size_t signalCount = 0u;
+    for (const FenceOperation& signal : desc.SignalFences)
+    {
+        const VulkanFence* pFence = m_Fences.Get(signal.Fence);
+        if (pFence == nullptr)
+        {
+            ReportStaleHandle(std::format(
+                "Rhi::VulkanDevice::Submit: signal fence {:#010x} is stale or was never valid.",
+                signal.Fence.Value));
+            continue;
+        }
+
+        signals[signalCount++] =
+            vk::SemaphoreSubmitInfo{.semaphore = *pFence->Timeline,
+                                    .value = signal.Value,
+                                    .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
+    }
+    for (const SemaphoreHandle handle : desc.SignalSemaphores)
+    {
+        signals[signalCount++] =
+            vk::SemaphoreSubmitInfo{.semaphore = GetSemaphore(handle),
+                                    .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
+    }
+
+    const vk::SubmitInfo2 submitInfo{.waitSemaphoreInfoCount = static_cast<uint32_t>(waitCount),
+                                     .pWaitSemaphoreInfos = waits.data(),
+                                     .commandBufferInfoCount =
+                                         static_cast<uint32_t>(desc.CommandLists.size()),
+                                     .pCommandBufferInfos = lists.data(),
+                                     .signalSemaphoreInfoCount = static_cast<uint32_t>(signalCount),
+                                     .pSignalSemaphoreInfos = signals.data()};
+
+    GetQueue(desc.Queue).submit2(submitInfo);
 }
 
 void VulkanDevice::ReportStaleHandle(std::string_view what) const
@@ -776,10 +1452,12 @@ bool VulkanDevice::IsPhysicalDeviceSuitable(const vk::raii::PhysicalDevice& devi
 
     auto features =
         device.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
+                            vk::PhysicalDeviceVulkan12Features,
                             vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
     bool bSupportsAllFeatures =
         features.get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy &&
         features.get<vk::PhysicalDeviceFeatures2>().features.independentBlend &&
+        features.get<vk::PhysicalDeviceVulkan12Features>().timelineSemaphore &&
         features.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
         features.get<vk::PhysicalDeviceVulkan13Features>().synchronization2 &&
         features.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
@@ -968,16 +1646,22 @@ void VulkanDevice::CreateLogicalDevice(const DeviceRequirements& requirements)
                                       .pQueuePriorities = &queuePriority});
     }
 
-    vk::StructureChain<
-        vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
-        vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
-        vk::PhysicalDeviceDescriptorIndexingFeaturesEXT, vk::PhysicalDeviceMaintenance8FeaturesKHR,
-        vk::PhysicalDeviceMaintenance9FeaturesKHR>
+    vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
+                       vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
+                       vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
+                       vk::PhysicalDeviceMaintenance8FeaturesKHR,
+                       vk::PhysicalDeviceMaintenance9FeaturesKHR>
         featureChain = {{.features = {.independentBlend = true, .samplerAnisotropy = true}},
                         {.shaderDrawParameters = true},
+                        // descriptorBindingPartiallyBound belongs here rather than
+                        // in a VkPhysicalDeviceDescriptorIndexingFeatures of its
+                        // own: descriptor indexing was promoted into Vulkan 1.2,
+                        // and chaining both structures is forbidden outright by
+                        // VUID-VkDeviceCreateInfo-pNext-02830, so that one feature
+                        // cannot be enabled in one and disabled in the other.
+                        {.descriptorBindingPartiallyBound = true, .timelineSemaphore = true},
                         {.synchronization2 = true, .dynamicRendering = true},
                         {.extendedDynamicState = true},
-                        {.descriptorBindingPartiallyBound = true},
                         {.maintenance8 = true},
                         {.maintenance9 = true}};
 
@@ -1017,6 +1701,20 @@ void VulkanDevice::CreateLogicalDevice(const DeviceRequirements& requirements)
         m_CopyQueue = vk::raii::Queue(m_Device, m_QueueFamilies.Copy, 0);
         SetVkDebugName(m_Device, *m_CopyQueue, vk::ObjectType::eQueue, "Copy Queue");
     }
+
+    // Sized per set rather than per pool, and it grows: bind groups are created
+    // at startup and rebuilt on resize, so the count is small but not a number
+    // this layer should be asserting a ceiling on.
+    // One entry per BindingType, and every one of them: a pool without a size for
+    // a type it is asked to allocate is only a warning here, because some
+    // implementations fail to report the out-of-pool condition they should.
+    static constexpr std::array kBindGroupSizes{
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 1u},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 4u},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 1u},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1u}};
+    m_BindGroupAllocator =
+        std::make_unique<DescriptorAllocator>(m_Device, kBindGroupSizes, 16u, "Bind Groups");
 
     // Setting debug names for objects which were created before the device was
     // created.

@@ -58,9 +58,143 @@ vk::BufferImageCopy MakeVkCopy(const BufferTextureCopyRegion& region)
 }
 } // namespace
 
-VulkanCommandList::VulkanCommandList(VulkanDevice& device, vk::CommandBuffer cmd)
-    : m_Device(device), m_Cmd(cmd)
+VulkanCommandList::VulkanCommandList(VulkanDevice& device, vk::CommandBuffer cmd, QueueType queue)
+    : m_Device(device), m_Cmd(cmd), m_Queue(queue)
 {
+}
+
+void VulkanCommandList::SetPipeline(GraphicsPipelineHandle pipeline)
+{
+    m_Cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_Device.GetPipeline(pipeline));
+}
+
+void VulkanCommandList::SetPipeline(ComputePipelineHandle pipeline)
+{
+    m_Cmd.bindPipeline(vk::PipelineBindPoint::eCompute, m_Device.GetPipeline(pipeline));
+}
+
+void VulkanCommandList::SetComputeBindGroup(PipelineLayoutHandle layout, uint32_t slot,
+                                            BindGroupHandle group)
+{
+    m_Cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, m_Device.GetPipelineLayout(layout),
+                             slot, m_Device.GetDescriptorSet(group), nullptr);
+}
+
+void VulkanCommandList::Dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ)
+{
+    m_Cmd.dispatch(groupsX, groupsY, groupsZ);
+}
+
+void VulkanCommandList::SetVertexBuffer(uint32_t slot, BufferHandle buffer, uint64_t offset)
+{
+    m_Cmd.bindVertexBuffers(slot, m_Device.GetBuffer(buffer), offset);
+}
+
+void VulkanCommandList::SetIndexBuffer(BufferHandle buffer, IndexFormat format, uint64_t offset)
+{
+    m_Cmd.bindIndexBuffer(m_Device.GetBuffer(buffer), offset,
+                          format == IndexFormat::Uint16 ? vk::IndexType::eUint16
+                                                        : vk::IndexType::eUint32);
+}
+
+void VulkanCommandList::SetCullMode(CullMode mode)
+{
+    m_Cmd.setCullMode(ToVk(mode));
+}
+
+void VulkanCommandList::DrawIndexed(uint32_t indexCount, uint32_t instanceCount,
+                                    uint32_t firstIndex, int32_t vertexOffset,
+                                    uint32_t firstInstance)
+{
+    m_Cmd.drawIndexed(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+}
+
+void VulkanCommandList::SetBindGroup(PipelineLayoutHandle layout, uint32_t slot,
+                                     BindGroupHandle group)
+{
+    m_Cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_Device.GetPipelineLayout(layout),
+                             slot, m_Device.GetDescriptorSet(group), nullptr);
+}
+
+void VulkanCommandList::PushConstants(PipelineLayoutHandle layout, ShaderStage stages,
+                                      uint32_t offset, std::span<const std::byte> data)
+{
+    m_Cmd.pushConstants(m_Device.GetPipelineLayout(layout), ToVk(stages), offset,
+                        static_cast<uint32_t>(data.size()), data.data());
+}
+
+void VulkanCommandList::BeginRendering(const RenderingDesc& desc)
+{
+    // Fixed capacity rather than an allocation per pass: this runs several times
+    // a frame, and a renderer wanting more than this many colour targets at once
+    // has outgrown the assumption rather than hit a limit worth growing.
+    constexpr size_t kMaxRenderTargets = 8u;
+    if (desc.RenderTargets.size() > kMaxRenderTargets)
+        throw std::runtime_error(
+            "Rhi::VulkanCommandList::BeginRendering: too many render targets.");
+
+    std::array<vk::RenderingAttachmentInfo, kMaxRenderTargets> colors{};
+    for (size_t i = 0; i < desc.RenderTargets.size(); i++)
+    {
+        const RenderTarget& target = desc.RenderTargets[i];
+        colors[i] = vk::RenderingAttachmentInfo{
+            .imageView = m_Device.GetImageView(target.View),
+            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .loadOp = ToVkLoadOp(target.Load),
+            .storeOp = ToVkStoreOp(target.Store),
+            .clearValue = vk::ClearColorValue(target.ClearColor[0], target.ClearColor[1],
+                                              target.ClearColor[2], target.ClearColor[3])};
+    }
+
+    vk::RenderingAttachmentInfo depth{};
+    if (desc.pDepthStencil != nullptr)
+    {
+        if (desc.pDepthStencil->bReadOnly && desc.pDepthStencil->Store != StoreOp::Preserve)
+        {
+            throw std::runtime_error("Rhi::VulkanCommandList::BeginRendering: a read-only "
+                                     "depth target cannot discard contents it never wrote.");
+        }
+
+        depth = vk::RenderingAttachmentInfo{
+            .imageView = m_Device.GetImageView(desc.pDepthStencil->View),
+            .imageLayout = desc.pDepthStencil->bReadOnly ? vk::ImageLayout::eDepthReadOnlyOptimal
+                                                         : vk::ImageLayout::eDepthAttachmentOptimal,
+            .loadOp = ToVkLoadOp(desc.pDepthStencil->Load),
+            // A read-only pass writes nothing, so the store is NONE rather than
+            // STORE: the layout forbids the write that STORE would claim.
+            .storeOp = desc.pDepthStencil->bReadOnly ? vk::AttachmentStoreOp::eNone
+                                                     : ToVkStoreOp(desc.pDepthStencil->Store),
+            .clearValue = vk::ClearDepthStencilValue(desc.pDepthStencil->ClearDepth,
+                                                     desc.pDepthStencil->ClearStencil)};
+    }
+
+    const vk::RenderingInfo renderingInfo{
+        .renderArea =
+            vk::Rect2D{vk::Offset2D{desc.RenderArea.Offset.X, desc.RenderArea.Offset.Y},
+                       vk::Extent2D{desc.RenderArea.Extent.Width, desc.RenderArea.Extent.Height}},
+        .layerCount = 1u,
+        .colorAttachmentCount = static_cast<uint32_t>(desc.RenderTargets.size()),
+        .pColorAttachments = colors.data(),
+        .pDepthAttachment = desc.pDepthStencil != nullptr ? &depth : nullptr};
+
+    m_Cmd.beginRendering(renderingInfo);
+}
+
+void VulkanCommandList::EndRendering()
+{
+    m_Cmd.endRendering();
+}
+
+void VulkanCommandList::SetViewport(const Viewport& viewport)
+{
+    m_Cmd.setViewport(0u, vk::Viewport{viewport.X, viewport.Y, viewport.Width, viewport.Height,
+                                       viewport.MinDepth, viewport.MaxDepth});
+}
+
+void VulkanCommandList::SetScissor(const Rect2D& rect)
+{
+    m_Cmd.setScissor(0u, vk::Rect2D{vk::Offset2D{rect.Offset.X, rect.Offset.Y},
+                                    vk::Extent2D{rect.Extent.Width, rect.Extent.Height}});
 }
 
 void VulkanCommandList::Begin()

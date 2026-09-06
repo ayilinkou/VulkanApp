@@ -57,11 +57,15 @@ TEST_CASE("The device supports the features the renderer requires", "[rhi][gpu][
     REQUIRE(physicalDevice.getProperties().apiVersion >= vk::ApiVersion13);
 
     const auto features =
-        physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
+        physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
+                                    vk::PhysicalDeviceVulkan13Features,
                                     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
 
     CHECK(features.get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy);
     CHECK(features.get<vk::PhysicalDeviceFeatures2>().features.independentBlend);
+    // The neutral fence is a monotonic counter (plan D5), which on this backend
+    // is a timeline semaphore and nothing else.
+    CHECK(features.get<vk::PhysicalDeviceVulkan12Features>().timelineSemaphore);
     CHECK(features.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering);
     CHECK(features.get<vk::PhysicalDeviceVulkan13Features>().synchronization2);
     CHECK(features.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState);

@@ -1,24 +1,23 @@
 #include "CloudSystem.h"
 #include <core/Log.h>
 #include <rhi/BarrierPresets.h>
+#include <rhi/ICommandAllocator.h>
 #include <rhi/ICommandList.h>
-#include <rhi/vulkan/CommandListUtil.h>
-#include <rhi/vulkan/ComputePipelineBuilder.h>
-#include <rhi/vulkan/DebugNames.h>
-#include <rhi/vulkan/VulkanNative.h>
+
+#include <platform/FileSystem.h>
+
+#include "BindGroupLayouts.h"
 
 using namespace Hikari;
 using namespace Hikari::Core;
 using namespace Hikari::Platform;
-using namespace Hikari::Rhi::Vulkan;
 
 inline constexpr LogCategory LogCloudSystem{"Cloud System"};
 
 const uint32_t CloudSystem::s_NOISE_RES = 128u;
 
 CloudSystem::CloudSystem(CloudSystemCreateInfo createInfo)
-    : m_RhiDevice(createInfo.RhiDevice), m_Device(Rhi::Vulkan::GetDevice(createInfo.RhiDevice)),
-      m_FramesInFlight(createInfo.FramesInFlight)
+    : m_RhiDevice(createInfo.RhiDevice), m_FramesInFlight(createInfo.FramesInFlight)
 {
     Init(createInfo);
 }
@@ -30,24 +29,23 @@ void CloudSystem::Init(const CloudSystemCreateInfo& createInfo)
     CreateTextureSampler();
     CreateOutputTextures(createInfo.SwapchainWidth, createInfo.SwapchainHeight);
     CreateNoiseTexture();
-    CreateDescriptorPool();
-    CreateDescriptorSetLayout();
+    CreateBindGroupLayouts();
     CreatePipeline(createInfo.ContentPaths, createInfo.PipelineCache, createInfo.GlobalSetLayout,
                    createInfo.DepthSetLayout);
-    AllocateDescriptorSets();
-    WriteDescriptorSets();
-
-    CreateBakeDescriptorPool();
-    CreateBakeDescriptorSetLayout();
     CreateBakePipeline(createInfo.ContentPaths, createInfo.PipelineCache);
-    AllocateAndWriteBakeDescriptorSet();
-    BakeNoiseTexture(createInfo.CommandPool, createInfo.ComputeQueue);
+    CreateBindGroups();
+    BakeNoiseTexture();
 }
 
 void CloudSystem::Resize(uint32_t width, uint32_t height)
 {
     CreateOutputTextures(width, height);
-    WriteDescriptorSets();
+
+    // The groups name the output textures, and a bind group is immutable, so new
+    // targets mean new groups (RHI plan D20). Safe here because the caller
+    // resizes only after waiting for the device to go idle.
+    m_BindGroups.clear();
+    CreateBindGroups();
 }
 
 void CloudSystem::CreateOutputTextures(uint32_t width, uint32_t height)
@@ -75,197 +73,140 @@ void CloudSystem::CreateOutputTextures(uint32_t width, uint32_t height)
     }
 }
 
-void CloudSystem::CreateDescriptorSetLayout()
+void CloudSystem::CreateBindGroupLayouts()
 {
-    std::array<vk::DescriptorSetLayoutBinding, 2> bindings{
-        {{0, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute},
-         {1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute}}};
+    m_SetLayout = Rhi::UniqueHandle<Rhi::BindGroupLayoutHandle>(
+        m_RhiDevice,
+        m_RhiDevice.CreateBindGroupLayout(Rhi::BindGroupLayoutDesc{
+            .Bindings = EngineBindGroups::kCloudDispatch, .DebugName = "Cloud Dispatch Layout"}));
 
-    vk::DescriptorSetLayoutCreateInfo layoutInfo{
-        .bindingCount = static_cast<uint32_t>(bindings.size()),
-        .pBindings = bindings.data(),
-    };
-    m_SetLayout = vk::raii::DescriptorSetLayout(m_Device, layoutInfo);
-}
-
-void CloudSystem::CreateBakeDescriptorSetLayout()
-{
-    std::array<vk::DescriptorSetLayoutBinding, 1> bindings{{
-        {0, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute},
-    }};
-
-    vk::DescriptorSetLayoutCreateInfo layoutInfo{
-        .bindingCount = static_cast<uint32_t>(bindings.size()),
-        .pBindings = bindings.data(),
-    };
-    m_BakeSetLayout = vk::raii::DescriptorSetLayout(m_Device, layoutInfo);
+    m_BakeSetLayout = Rhi::UniqueHandle<Rhi::BindGroupLayoutHandle>(
+        m_RhiDevice,
+        m_RhiDevice.CreateBindGroupLayout(Rhi::BindGroupLayoutDesc{
+            .Bindings = EngineBindGroups::kCloudBake, .DebugName = "Cloud Bake Layout"}));
 }
 
 void CloudSystem::CreatePipeline(const Paths& paths, Rhi::IPipelineCache& pipelineCache,
-                                 vk::raii::DescriptorSetLayout& globalSetLayout,
-                                 vk::raii::DescriptorSetLayout& depthSetLayout)
+                                 Rhi::BindGroupLayoutHandle globalLayout,
+                                 Rhi::BindGroupLayoutHandle depthLayout)
 {
-    std::array setLayouts = {*globalSetLayout, *depthSetLayout, *m_SetLayout};
-    std::array<vk::PushConstantRange, 1> pushRanges = {
-        vk::PushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eCompute,
-                              .offset = 0,
-                              .size = sizeof(CloudPushConstants)}};
+    const std::array bindGroupLayouts{globalLayout, depthLayout, m_SetLayout.Get()};
+    const std::array pushRanges{Rhi::PushConstantRange{.Stages = Rhi::ShaderStage::Compute,
+                                                       .Size = sizeof(CloudPushConstants)}};
 
-    auto [layout, pipeline] = ComputePipelineBuilder(m_Device)
-                                  .Shader(paths.Shader("clouds.comp.spv").string())
-                                  .Layout(setLayouts, pushRanges)
-                                  .DebugName("Clouds")
-                                  .Cache(pipelineCache)
-                                  .Build();
+    m_PipelineLayout = Rhi::UniqueHandle<Rhi::PipelineLayoutHandle>(
+        m_RhiDevice, m_RhiDevice.CreatePipelineLayout(
+                         Rhi::PipelineLayoutDesc{.BindGroupLayouts = bindGroupLayouts,
+                                                 .PushConstantRanges = pushRanges,
+                                                 .DebugName = "Clouds Layout"}));
 
-    m_PipelineLayout = std::move(layout);
-    m_Pipeline = std::move(pipeline);
+    m_Pipeline = Rhi::UniqueHandle<Rhi::ComputePipelineHandle>(
+        m_RhiDevice,
+        m_RhiDevice.CreateComputePipeline(
+            Rhi::ComputePipelineDesc{.Layout = m_PipelineLayout.Get(),
+                                     .Shader = {LoadShader(paths, "clouds.comp"), "main"},
+                                     .DebugName = "Clouds"},
+            pipelineCache));
 }
 
 void CloudSystem::CreateBakePipeline(const Paths& paths, Rhi::IPipelineCache& pipelineCache)
 {
-    std::array<vk::DescriptorSetLayout, 1> setLayouts = {*m_BakeSetLayout};
-    std::array<vk::PushConstantRange, 1> pushRanges = {
-        vk::PushConstantRange{.stageFlags = vk::ShaderStageFlagBits::eCompute,
-                              .offset = 0,
-                              .size = sizeof(BakeConstants)}};
+    const std::array bindGroupLayouts{m_BakeSetLayout.Get()};
+    const std::array pushRanges{
+        Rhi::PushConstantRange{.Stages = Rhi::ShaderStage::Compute, .Size = sizeof(BakeConstants)}};
 
-    auto [layout, pipeline] = ComputePipelineBuilder(m_Device)
-                                  .Shader(paths.Shader("bakePerlinWorley.comp.spv").string())
-                                  .Layout(setLayouts, pushRanges)
-                                  .DebugName("Bake Perlin Worley")
-                                  .Cache(pipelineCache)
-                                  .Build();
+    m_BakePipelineLayout = Rhi::UniqueHandle<Rhi::PipelineLayoutHandle>(
+        m_RhiDevice, m_RhiDevice.CreatePipelineLayout(
+                         Rhi::PipelineLayoutDesc{.BindGroupLayouts = bindGroupLayouts,
+                                                 .PushConstantRanges = pushRanges,
+                                                 .DebugName = "Bake Perlin Worley Layout"}));
 
-    m_BakePipelineLayout = std::move(layout);
-    m_BakePipeline = std::move(pipeline);
+    m_BakePipeline = Rhi::UniqueHandle<Rhi::ComputePipelineHandle>(
+        m_RhiDevice,
+        m_RhiDevice.CreateComputePipeline(
+            Rhi::ComputePipelineDesc{.Layout = m_BakePipelineLayout.Get(),
+                                     .Shader = {LoadShader(paths, "bakePerlinWorley.comp"), "main"},
+                                     .DebugName = "Bake Perlin Worley"},
+            pipelineCache));
 }
 
-void CloudSystem::CreateDescriptorPool()
+/**
+ * The compiled shader named `name`, kept alive for the run.
+ *
+ * Same arrangement as the renderer's: the caller resolves the file and the
+ * device says which kind it reads (plan D24).
+ */
+Rhi::ShaderModuleHandle CloudSystem::LoadShader(const Paths& paths, const std::string& name)
 {
-    std::array<vk::DescriptorPoolSize, 2> poolSizes{
-        {{vk::DescriptorType::eStorageImage, m_FramesInFlight},
-         {vk::DescriptorType::eCombinedImageSampler, m_FramesInFlight}}};
+    const std::string file = std::format("{}.{}", name, m_RhiDevice.GetCaps().ShaderExtension);
+    const std::vector<char> code = Platform::ReadFile(paths.Shader(file).string());
 
-    vk::DescriptorPoolCreateInfo poolInfo{
-        .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-        .maxSets = m_FramesInFlight,
-        .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
-        .pPoolSizes = poolSizes.data(),
-    };
-    m_DescriptorPool = vk::raii::DescriptorPool(m_Device, poolInfo);
+    m_ShaderModules.push_back(Rhi::UniqueHandle<Rhi::ShaderModuleHandle>(
+        m_RhiDevice, m_RhiDevice.CreateShaderModule(Rhi::ShaderModuleDesc{
+                         .Bytes = std::as_bytes(std::span(code)), .DebugName = file})));
+
+    return m_ShaderModules.back().Get();
 }
 
-void CloudSystem::CreateBakeDescriptorPool()
+void CloudSystem::CreateBindGroups()
 {
-    std::array<vk::DescriptorPoolSize, 1> poolSizes{{
-        {vk::DescriptorType::eStorageImage, 1},
-    }};
-
-    vk::DescriptorPoolCreateInfo poolInfo{
-        .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-        .maxSets = 1,
-        .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
-        .pPoolSizes = poolSizes.data(),
-    };
-    m_BakeDescriptorPool = vk::raii::DescriptorPool(m_Device, poolInfo);
-}
-
-void CloudSystem::AllocateDescriptorSets()
-{
-    std::vector<vk::DescriptorSetLayout> layouts(m_FramesInFlight, *m_SetLayout);
-    vk::DescriptorSetAllocateInfo allocInfo{
-        .descriptorPool = *m_DescriptorPool,
-        .descriptorSetCount = m_FramesInFlight,
-        .pSetLayouts = layouts.data(),
-    };
-    m_DescriptorSets = vk::raii::DescriptorSets(m_Device, allocInfo);
-}
-
-void CloudSystem::AllocateAndWriteBakeDescriptorSet()
-{
-    vk::DescriptorSetAllocateInfo allocInfo{
-        .descriptorPool = *m_BakeDescriptorPool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &*m_BakeSetLayout,
-    };
-    m_BakeDescriptorSet = std::move(vk::raii::DescriptorSets(m_Device, allocInfo).front());
-
-    vk::DescriptorImageInfo noiseImageInfo{
-        .imageView = Rhi::Vulkan::GetImageView(m_RhiDevice, m_PerlinWorley.GetView()),
-        .imageLayout = vk::ImageLayout::eGeneral,
-    };
-
-    vk::WriteDescriptorSet writeDescSet{
-        .dstSet = *m_BakeDescriptorSet,
-        .dstBinding = 0,
-        .dstArrayElement = 0,
-        .descriptorCount = 1,
-        .descriptorType = vk::DescriptorType::eStorageImage,
-        .pImageInfo = &noiseImageInfo,
-    };
-    m_Device.updateDescriptorSets(writeDescSet, {});
-}
-
-void CloudSystem::WriteDescriptorSets()
-{
-    LogMsg(LogSeverity::Info, LogCloudSystem, "WriteDescriptorSets()");
-
     for (uint32_t i = 0u; i < m_FramesInFlight; i++)
     {
-        vk::DescriptorImageInfo storageImageInfo{
-            .imageView = Rhi::Vulkan::GetImageView(m_RhiDevice, m_OutputTextures[i].GetView()),
-            .imageLayout = vk::ImageLayout::eGeneral,
-        };
-        vk::DescriptorImageInfo perlinWorleyImageInfo{
-            .sampler = Rhi::Vulkan::GetSampler(m_RhiDevice, m_TextureSampler.Get()),
-            .imageView = Rhi::Vulkan::GetImageView(m_RhiDevice, m_PerlinWorley.GetView()),
-            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+        const std::array bindings{
+            Rhi::BindGroupBinding{.Slot = 0u,
+                                  .Type = Rhi::BindingType::UnorderedAccessTexture,
+                                  .View = m_OutputTextures[i].GetView()},
+            Rhi::BindGroupBinding{
+                .Slot = 1u, .Type = Rhi::BindingType::Texture, .View = m_PerlinWorley.GetView()},
+            Rhi::BindGroupBinding{
+                .Slot = 2u, .Type = Rhi::BindingType::Sampler, .Sampler = m_TextureSampler.Get()}};
 
-        std::array<vk::WriteDescriptorSet, 2> writeDescSet{
-            vk::WriteDescriptorSet{.dstSet = *m_DescriptorSets[i],
-                                   .dstBinding = 0,
-                                   .dstArrayElement = 0,
-                                   .descriptorCount = 1,
-                                   .descriptorType = vk::DescriptorType::eStorageImage,
-                                   .pImageInfo = &storageImageInfo},
-            vk::WriteDescriptorSet{
-                .dstSet = *m_DescriptorSets[i],
-                .dstBinding = 1,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-                .pImageInfo = &perlinWorleyImageInfo,
-            }};
-
-        m_Device.updateDescriptorSets(writeDescSet, {});
+        m_BindGroups.push_back(Rhi::UniqueHandle<Rhi::BindGroupHandle>(
+            m_RhiDevice, m_RhiDevice.CreateBindGroup(Rhi::BindGroupDesc{
+                             .Layout = m_SetLayout.Get(),
+                             .Bindings = bindings,
+                             .DebugName = std::format("Cloud Dispatch Frame {}", i)})));
     }
+
+    const std::array bakeBindings{
+        Rhi::BindGroupBinding{.Slot = 0u,
+                              .Type = Rhi::BindingType::UnorderedAccessTexture,
+                              .View = m_PerlinWorley.GetView()}};
+
+    m_BakeBindGroup = Rhi::UniqueHandle<Rhi::BindGroupHandle>(
+        m_RhiDevice,
+        m_RhiDevice.CreateBindGroup(Rhi::BindGroupDesc{
+            .Layout = m_BakeSetLayout.Get(), .Bindings = bakeBindings, .DebugName = "Cloud Bake"}));
 }
 
-Rhi::BarrierCounts CloudSystem::RecordDispatch(vk::raii::CommandBuffer& cmd, uint32_t frameIndex,
-                                               vk::raii::DescriptorSet& globalSet,
-                                               vk::raii::DescriptorSet& depthSet)
+/**
+ * Records the cloud dispatch into a list the caller owns, began and will end.
+ *
+ * The barriers around it are the point of returning counts: the output volume is
+ * written here and sampled by the composite pass, so both transitions belong to
+ * this pass rather than to whoever submits it.
+ */
+Rhi::BarrierCounts CloudSystem::RecordDispatch(Rhi::ICommandList& list, uint32_t frameIndex,
+                                               Rhi::BindGroupHandle globalGroup,
+                                               Rhi::BindGroupHandle depthGroup)
 {
-    std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(m_RhiDevice, *cmd);
-    list->Begin();
-
     Rhi::BarrierCounts barrierCounts =
-        list->Barrier(Rhi::BarrierPresets::UndefinedToUnorderedAccess().On(
+        list.Barrier(Rhi::BarrierPresets::UndefinedToUnorderedAccess().On(
             m_OutputTextures[frameIndex].GetHandle()));
 
-    cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *m_Pipeline);
-    std::array<vk::DescriptorSet, 3> sets = {*globalSet, *depthSet, *m_DescriptorSets[frameIndex]};
-    cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *m_PipelineLayout, 0, sets, {});
+    list.SetPipeline(m_Pipeline.Get());
+    list.SetComputeBindGroup(m_PipelineLayout.Get(), 0u, globalGroup);
+    list.SetComputeBindGroup(m_PipelineLayout.Get(), 1u, depthGroup);
+    list.SetComputeBindGroup(m_PipelineLayout.Get(), 2u, m_BindGroups[frameIndex].Get());
 
-    cmd.pushConstants<CloudPushConstants>(*m_PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0,
-                                          m_CloudData);
+    list.PushConstants(m_PipelineLayout.Get(), Rhi::ShaderStage::Compute, 0u,
+                       std::as_bytes(std::span(&m_CloudData, 1)));
 
-    cmd.dispatch((m_OutputWidth + 7) / 8, (m_OutputHeight + 7) / 8, 1);
+    // matches numthreads(8,8,1)
+    list.Dispatch((m_OutputWidth + 7) / 8, (m_OutputHeight + 7) / 8, 1u);
 
-    barrierCounts += list->Barrier(Rhi::BarrierPresets::UnorderedAccessToShaderResource().On(
+    barrierCounts += list.Barrier(Rhi::BarrierPresets::UnorderedAccessToShaderResource().On(
         m_OutputTextures[frameIndex].GetHandle()));
-
-    list->End();
 
     return barrierCounts;
 }
@@ -282,27 +223,36 @@ void CloudSystem::CreateNoiseTexture()
                 Rhi::TextureViewDimension::Texture3D);
 }
 
-void CloudSystem::BakeNoiseTexture(vk::raii::CommandPool& commandPool,
-                                   vk::raii::Queue& computeQueue)
+void CloudSystem::BakeNoiseTexture()
 {
     LogMsg(LogSeverity::Info, LogCloudSystem, "Baking perlin worley texture ({}x{}x{})",
            s_NOISE_RES, s_NOISE_RES, s_NOISE_RES);
 
-    vk::raii::CommandBuffer cmd = BeginSingleTimeCommand(m_Device, commandPool);
-    std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(m_RhiDevice, *cmd);
+    // Graphics, not Compute, even though this is a dispatch. The device reports
+    // whether an async compute queue exists (DeviceCaps::bHasDedicatedComputeQueue),
+    // but using it would hand the noise volume between queue families -- written
+    // here, sampled by the frame's dispatch -- and nothing owns that transfer yet.
+    // The cloud work shares the graphics queue until it does.
+    //
+    // A one-shot allocator of its own: this runs once at startup, and sharing one
+    // with the frame loop would mean resetting storage the frame loop is using.
+    const std::unique_ptr<Rhi::ICommandAllocator> allocator = m_RhiDevice.CreateCommandAllocator(
+        Rhi::CommandAllocatorDesc{.Queue = Rhi::QueueType::Graphics, .DebugName = "Cloud Bake"});
+
+    Rhi::ICommandList* list = &allocator->Acquire();
+    list->Begin();
 
     list->Barrier(Rhi::BarrierPresets::UndefinedToUnorderedAccess().On(m_PerlinWorley.GetHandle()));
 
-    cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *m_BakePipeline);
-    cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *m_BakePipelineLayout, 0,
-                           *m_BakeDescriptorSet, {});
+    list->SetPipeline(m_BakePipeline.Get());
+    list->SetComputeBindGroup(m_BakePipelineLayout.Get(), 0u, m_BakeBindGroup.Get());
 
-    BakeConstants bc{.Resolution = s_NOISE_RES, .WorleyPointsPerCell = 1};
-    cmd.pushConstants<BakeConstants>(*m_BakePipelineLayout, vk::ShaderStageFlagBits::eCompute, 0,
-                                     bc);
+    const BakeConstants bc{.Resolution = s_NOISE_RES, .WorleyPointsPerCell = 1};
+    list->PushConstants(m_BakePipelineLayout.Get(), Rhi::ShaderStage::Compute, 0u,
+                        std::as_bytes(std::span(&bc, 1)));
 
-    cmd.dispatch(s_NOISE_RES / 4, s_NOISE_RES / 4,
-                 s_NOISE_RES / 4); // matches numthreads(4,4,4)
+    // matches numthreads(4,4,4)
+    list->Dispatch(s_NOISE_RES / 4, s_NOISE_RES / 4, s_NOISE_RES / 4);
 
     // The bake's result is read by another dispatch, not by the main pass, so
     // the destination stage is compute rather than the preset's default.
@@ -311,7 +261,20 @@ void CloudSystem::BakeNoiseTexture(vk::raii::CommandPool& commandPool,
             .On(m_PerlinWorley.GetHandle()));
 
     // TODO: move to a read only image
-    EndSingleTimeCommand(cmd, computeQueue);
+    list->End();
+
+    // Waited on rather than left running: everything after this reads the noise,
+    // and the bake is startup work whose cost is paid once either way.
+    const Rhi::UniqueHandle<Rhi::FenceHandle> fence(
+        m_RhiDevice, m_RhiDevice.CreateFence(Rhi::FenceDesc{.DebugName = "Cloud Bake"}));
+    constexpr uint64_t kDone = 1u;
+    const Rhi::FenceOperation signal{.Fence = fence.Get(), .Value = kDone};
+
+    m_RhiDevice.Submit(Rhi::SubmitDesc{.Queue = Rhi::QueueType::Graphics,
+                                       .CommandLists = {&list, 1u},
+                                       .SignalFences = {&signal, 1u}});
+
+    m_RhiDevice.WaitForFence(fence.Get(), kDone);
 }
 
 void CloudSystem::CreateTextureSampler()

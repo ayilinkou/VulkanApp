@@ -22,10 +22,14 @@
 #include <rhi/TextureViewDesc.h>
 #include <rhi/UploadContext.h>
 
+#include "vulkan/DescriptorAllocator.h"
 #include "vulkan/OwnershipTransfer.h"
 #include "vulkan/QueueFamilies.h"
 #include "vulkan/VulkanAllocator.h"
+#include "vulkan/VulkanBindGroup.h"
 #include "vulkan/VulkanBuffer.h"
+#include "vulkan/VulkanFence.h"
+#include "vulkan/VulkanPipeline.h"
 #include "vulkan/VulkanSampler.h"
 #include "vulkan/VulkanSemaphore.h"
 #include "vulkan/VulkanTexture.h"
@@ -61,6 +65,44 @@ public:
 
     [[nodiscard]] std::unique_ptr<IUploadContext>
     CreateUploadContext(const UploadContextDesc& desc) override;
+
+    [[nodiscard]] std::unique_ptr<ICommandAllocator>
+    CreateCommandAllocator(const CommandAllocatorDesc& desc) override;
+
+    BindGroupLayoutHandle CreateBindGroupLayout(const BindGroupLayoutDesc& desc) override;
+    void Destroy(BindGroupLayoutHandle handle) override;
+    BindGroupHandle CreateBindGroup(const BindGroupDesc& desc) override;
+    void Destroy(BindGroupHandle handle) override;
+    uint32_t GetLiveBindGroupLayoutCount() const override { return m_BindGroupLayouts.Size(); }
+    uint32_t GetLiveBindGroupCount() const override { return m_BindGroups.Size(); }
+
+    /** The set a handle names, for the transitional binding path. */
+    vk::DescriptorSet GetDescriptorSet(BindGroupHandle handle) const;
+    vk::DescriptorSetLayout GetDescriptorSetLayout(BindGroupLayoutHandle handle) const;
+
+    bool IsFormatSupported(Format format, TextureUsage usage) const override;
+
+    PipelineLayoutHandle CreatePipelineLayout(const PipelineLayoutDesc& desc) override;
+    void Destroy(PipelineLayoutHandle handle) override;
+    ShaderModuleHandle CreateShaderModule(const ShaderModuleDesc& desc) override;
+    void Destroy(ShaderModuleHandle handle) override;
+    GraphicsPipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc& desc,
+                                                  IPipelineCache& cache) override;
+    void Destroy(GraphicsPipelineHandle handle) override;
+    ComputePipelineHandle CreateComputePipeline(const ComputePipelineDesc& desc,
+                                                IPipelineCache& cache) override;
+    void Destroy(ComputePipelineHandle handle) override;
+
+    /** Raw objects for the transitional recording path. */
+    vk::PipelineLayout GetPipelineLayout(PipelineLayoutHandle handle) const;
+    vk::Pipeline GetPipeline(GraphicsPipelineHandle handle) const;
+    vk::Pipeline GetPipeline(ComputePipelineHandle handle) const;
+
+    FenceHandle CreateFence(const FenceDesc& desc) override;
+    void Destroy(FenceHandle handle) override;
+    uint32_t GetLiveFenceCount() const override { return m_Fences.Size(); }
+    void WaitForFence(FenceHandle handle, uint64_t value) override;
+    void Submit(const SubmitDesc& desc) override;
 
     [[nodiscard]] std::unique_ptr<IPipelineCache>
     CreatePipelineCache(const PipelineCacheDesc& desc) override;
@@ -129,7 +171,22 @@ public:
      * work is still submitted to the graphics queue, so that family is known
      * but idle.
      */
-    uint32_t GetQueueFamily(QueueType role) const { return m_QueueFamilies.Get(role); }
+    /**
+     * The family of the queue GetQueue(role) will actually return -- not merely a
+     * family that could serve the role.
+     *
+     * The distinction is load-bearing: a command buffer may only be submitted to
+     * a queue of the family it was allocated from, so a command allocator built
+     * for a role and a submission to that same role have to agree. They did not
+     * for Compute, whose family can be dedicated while no compute queue is ever
+     * created, which made an allocator on the compute family submit to a graphics
+     * queue -- invalid, and reported by nothing.
+     *
+     * QueueFamilies::Get() answers the other question, which family *can* serve
+     * the role, and DeviceCaps::bHasDedicatedComputeQueue answers whether the
+     * hardware has one. Both stay truthful; this one describes where work goes.
+     */
+    uint32_t GetQueueFamily(QueueType role) const;
 
     /**
      * The queue to submit `role`'s work to. Falls back to the graphics queue
@@ -264,6 +321,19 @@ private:
      * else here.
      */
     Core::HandlePool<VulkanSemaphore, SemaphoreTag> m_Semaphores;
+    Core::HandlePool<VulkanFence, FenceTag> m_Fences;
+    Core::HandlePool<VulkanBindGroupLayout, BindGroupLayoutTag> m_BindGroupLayouts;
+
+    /**
+     * Declared after the allocator that owns the pools their sets came from, so
+     * the sets are freed before the pools they name are destroyed.
+     */
+    std::unique_ptr<DescriptorAllocator> m_BindGroupAllocator;
+    Core::HandlePool<VulkanBindGroup, BindGroupTag> m_BindGroups;
+    Core::HandlePool<VulkanPipelineLayout, PipelineLayoutTag> m_PipelineLayouts;
+    Core::HandlePool<VulkanShaderModule, ShaderModuleTag> m_ShaderModules;
+    Core::HandlePool<VulkanGraphicsPipeline, GraphicsPipelineTag> m_GraphicsPipelines;
+    Core::HandlePool<VulkanComputePipeline, ComputePipelineTag> m_ComputePipelines;
 
     QueueFamilies m_QueueFamilies;
 

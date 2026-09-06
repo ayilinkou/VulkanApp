@@ -1745,14 +1745,19 @@ cannot hold:
 ## 10. Retirement
 
 R17 is done and `CLAUDE.md`'s stage table reads Stage 5 ✅, and this file was kept anyway —
-retiring it is a deliberate decision rather than a step that falls due. **Stage 7.5's B6
-proposes itself as the moment**, since that is when the transitional area shrinks to its
-permanent residue and §8's checklist has no unfinished rows left to track.
+retiring it is a deliberate decision rather than a step that falls due. Stage 7.5's step 12
+proposed itself as the moment and **the decision taken there was to wait**: the seam is
+finished, but both plans still read as the record of how it got that way, and there is no cost
+to keeping them until there is something better to replace them with.
 
-**Promote before deleting.** The step list is disposable; the design decisions are not. Move
-into `docs/architecture_plan.md`, a small permanent `docs/rhi.md`, or
-`docs/backend_readiness_plan.md` — which is the natural host, since it is retained for the
-same reason and its D14–D18 already continue this numbering:
+**Decided: both plans consolidate into one permanent RHI document.** Not this file absorbing
+the other, and not the other absorbing this one — a single `docs/rhi.md` that is kept for the
+lifetime of the project, holding the whole D-series and the rules the seam is built on, with
+both step lists dropped. That is what makes it worth keeping: a reader wanting to know what the
+RHI's public API may say should find one file, not two retained plans and a rule about which
+wins.
+
+**Promote into it:**
 
 - §2 D0–D13 — the rationale future work has to respect, less D7 and D8, superseded by D14
   and D15.
@@ -1763,5 +1768,6 @@ same reason and its D14–D18 already continue this numbering:
   `--kebab-case` as every other flag. It is the only thing that tells a reader which options
   stop meaning anything under a second backend, and it outlives this document.
 
-**Then delete:** this file, and the Stage 5 pointer in `CLAUDE.md`'s working rules and
-roadmap table.
+**Then delete:** this file and `docs/backend_readiness_plan.md`, along with the pointers to
+both in `CLAUDE.md`'s document list, working rules and roadmap table — which then names one RHI
+document rather than describing which of two governs the seam.

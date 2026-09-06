@@ -7,8 +7,11 @@
 #include "vulkan/vulkan.hpp"
 
 #include <rhi/Barrier.h>
+#include <rhi/BindGroup.h>
 #include <rhi/BufferDesc.h>
 #include <rhi/Diagnostics.h>
+#include <rhi/Pipeline.h>
+#include <rhi/Rendering.h>
 #include <rhi/RhiTypes.h>
 #include <rhi/SamplerDesc.h>
 #include <rhi/TextureDesc.h>
@@ -50,6 +53,33 @@
  */
 namespace Hikari::Rhi::Vulkan
 {
+/**
+ * Neutral load and store ops to Vulkan's.
+ *
+ * Switches without a default so that a new enumerator fails the build here
+ * rather than silently mapping to whatever came first (plan D11's ratchet,
+ * applied to the same problem).
+ */
+/**
+ * Neutral shader stages to Vulkan's. Throws on an empty set: a binding or a
+ * push constant range visible to no stage is a caller mistake rather than a
+ * degenerate case worth expressing.
+ */
+vk::ShaderStageFlags ToVk(ShaderStage stages);
+
+vk::CullModeFlags ToVk(CullMode mode);
+
+/**
+ * Neutral texture usage to the format features a device must advertise for it.
+ * Separate from the usage-to-VkImageUsageFlags mapping: what a format must
+ * support and what an image is created with are different questions with
+ * different answers.
+ */
+vk::FormatFeatureFlags ToVkFormatFeatures(TextureUsage usage);
+
+vk::AttachmentLoadOp ToVkLoadOp(LoadOp op);
+vk::AttachmentStoreOp ToVkStoreOp(StoreOp op);
+
 /**
  * VMA splits "where the memory lives" across a usage enum and a set of
  * allocation flags, so a neutral MemoryAccess converts to a pair rather than to

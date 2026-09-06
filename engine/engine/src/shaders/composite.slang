@@ -25,14 +25,17 @@ VS_Out vertMain(VS_In v)
 [[vk::binding(0, 1)]] Texture2D<float4> opaqueTex;
 [[vk::binding(1, 1)]] Texture2D<float4> accumTex;
 [[vk::binding(2, 1)]] Texture2D<float> revealageTex;
-[[vk::binding(3, 1)]] Sampler2D cloudsTex;
+[[vk::binding(3, 1)]] Texture2D<float4> cloudsTex;
+// Separate from the texture rather than a Sampler2D: D3D12 has no combined
+// image sampler, so the RHI's binding model has none either.
+[[vk::binding(4, 1)]] SamplerState cloudsSampler;
 
 [shader("fragment")]
 float4 fragMain(VS_Out f) : SV_Target
 {
 	int3 texel = int3((int2)f.Pos.xy, 0);
 	float4 opaque = float4(opaqueTex.Load(texel).rgb, 1.f);
-	float4 clouds = cloudsTex.Sample(f.TexCoord); // quarter res
+	float4 clouds = cloudsTex.Sample(cloudsSampler, f.TexCoord); // quarter res
 	
 	float3 composite;
 	float3 srcColor = clouds.rgb * clouds.a + opaque.rgb * (1.f - clouds.a);

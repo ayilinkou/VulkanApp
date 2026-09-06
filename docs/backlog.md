@@ -27,7 +27,7 @@ git history is the record.
 | P2 | `--present-mode <immediate\|mailbox\|fifo\|fifo-relaxed>`, defaulting to mailbox; an explicit mode that the surface does not offer is a hard error | `rhi/IPresentTarget.h`, `SwapchainUtil.h`, `RunSpec` | S | |
 | P2 | Document the matrix convention once and apply it consistently | `opaque.slang` header comment | S | |
 | P2 | `.map` format `version` attribute | `XmlParser` | XS | |
-| P2 | Record the GPU name, driver version, API version, OS, architecture **and which backend produced it** in the run report — two reports from different machines are otherwise comparable-looking and not comparable, and with `--backend` two from the same machine are too | `Engine.cpp`, `rhi/IDevice.h` | S | a neutral device-info accessor on `IDevice`, which is a seam decision — so Stage 7.5, which is where seam decisions are taken |
+| P2 | Record the GPU name, driver version, API version, OS, architecture **and which backend produced it** in the run report — two reports from different machines are otherwise comparable-looking and not comparable, and with `--backend` two from the same machine are too | `Engine.cpp`, `rhi/IDevice.h` | S | nothing — its blocker was "a seam decision", and Stage 7.5 is complete. `backend_readiness_plan.md` §6 places it in Stage 7.6 |
 | P1 | A baseline comparison script — decode both PNGs, report the diff bounding box, and diff the report's `counters`. Today `CLAUDE.md` has to tell a human to drive PIL by hand, and that is not theoretical: the documented recipe compared RGBA images with `getbbox()`, which defaults to `alpha_only=True` and therefore inspected only the alpha channel. Every capture is fully opaque, so the check passed for any two images at all until it was corrected on 2026-09-05 | `tests/scripts/` | S–M | **scheduled in Stage 7.6**, which needs it with per-channel tolerance caps built in (backend readiness plan D26) — do it there rather than twice |
 | P2 | Make the validation layers runtime-selectable instead of `NDEBUG`-gated. `DeviceDesc::bEnableValidation` is already a runtime field, but the engine decides it at compile time, so a Release build reports zero validation errors trivially and cannot assert them. Sync validation is likewise hardcoded on rather than selectable | `Engine.cpp`, `RunSpec`, `rhi/DeviceDesc.h` | S | **scheduled in Stage 7.6** — two backends mean two validation surfaces, and a Windows release job worth having assert |
 | P2 | A Debug build cannot start where `VK_LAYER_KHRONOS_validation` is not installed: validation goes into `requiredLayers`, so `VulkanDevice.cpp:604` throws `Required layer not supported` at instance creation rather than logging and continuing without it. Distinct from making validation runtime-selectable — this is what should happen when the layer is simply absent, as it is on a fresh clone without the SDK's layers | `VulkanDevice.cpp` | S | |
@@ -45,34 +45,7 @@ git history is the record.
 | P3 | Emissive and occlusion texture maps: raise `TextureBinding::COUNT` past 3. Nothing is currently held back — neither map is parsed by the loader, present in `MaterialData`, or referenced by a shader — so this is a feature rather than a deferred fix, which is why Stage 7.5 excluded it and why it is no longer a rider on step 70 as `suggested_work.md` §2.6 proposed. After Stage 7.5 step 5 it is an enum value, a layout entry, a `PBRMaterial` write and two shaders, with no descriptor-pool consequences. **Changes the baseline deliberately** | `Texture.h`, `PBRMaterial`, surface shaders | S–M | nothing; cheapest after Stage 7.5 step 5 |
 | P3 | DXVK on Linux — run the D3D12 backend over Vulkan, so the second backend is exercisable without Windows. A stretch goal: it tests our D3D12 code against a translation layer's interpretation rather than against a real D3D12 runtime, so a pass proves less than it looks and a failure may be DXVK's | build, CI | L | Stage 7.7 existing at all |
 
-Two of these are worth expanding on, because they are latent defects or carry a decision:
-
-- **The synchronization the GPU tests do not check.** `tests/gpu/rhi/PresentTargetTests.cpp`
-  reads an offscreen image after rendering into it, and orders that copy after the render by
-  waiting on the target's render-complete semaphore — passed in explicitly so that the wait is
-  visible at the call site rather than hidden in a helper. The comment above the case says the
-  ordering "is ordering it establishes", and that a stray `WaitIdle` would hide a read that
-  established none.
-
-  **It does not currently establish anything the test can see.** Dropping the semaphore and
-  re-running leaves every case passing. Nothing catches it, for two reasons that compound:
-  standard validation does not track memory hazards at all, and synchronization validation —
-  which does — is off by default. What is left is the driver's own timing, which on this
-  machine happens to finish the render before the copy starts.
-
-  That is the worst shape a test can have. It reads as covering the hazard, so a future change
-  that drops the wait, narrows the barrier's source stage below the semaphore's signal stage,
-  or reorders the submit will land green; and a missing dependency does not fail where it was
-  written. It fails intermittently, on another driver, in whatever runs next — which is the
-  most expensive kind of graphics bug precisely because the evidence is nowhere near the cause.
-  This is also the one hazard class the RHI's own design leans on tests to check, since the
-  frame loop hands out semaphores that callers are trusted to wait on.
-
-  Fixing it means running the `gpu`-labelled tests with synchronization validation enabled,
-  which needs a way to ask for it: today `DeviceDesc` carries `bEnableValidation` and nothing
-  finer, so the knob is a new field (or a validation-features struct) plumbed to the instance's
-  `VkValidationFeaturesEXT` / `VK_EXT_layer_settings` chain. The check that it worked is the
-  experiment above run in reverse — delete the wait, and require that the suite now fails.
+One of these is worth expanding on, because it carries a decision:
 
 - **`--present-mode`, and why the two failure policies differ.** The default stays what it is
   today: prefer mailbox, fall back to FIFO. **An explicitly requested mode that the surface

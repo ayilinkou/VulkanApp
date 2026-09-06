@@ -9,7 +9,8 @@
 **Created:** 5 September 2026 · **Rewritten:** 6 September 2026, after the `/grill-me`
 interview §0 demanded · **Supersedes:** `rhi_extraction_plan.md` D7 and D8;
 `architecture_plan.md` Part IV steps 48–56 in part, and §20's bindless row ·
-**Status:** grilled. Step 1 may start.
+**Status:** Stage 7.5 complete. Stage 7.6 grilled in part on 6 September 2026 — D27–D32 are its
+output, and §4.1 is the frontier that interview had not reached when it stopped.
 
 ---
 
@@ -597,6 +598,150 @@ whether it fell or walked there over six months.
 exactly as strict as it is today; across backends it is the configured limits. There is no
 second tool to keep in step.
 
+### D27 — DXIL is emitted on every platform, not only on Windows
+
+vcpkg's `shader-slang` carries no DXC, so `-target dxil` fails outright with it: `failed to load
+downstream compiler 'dxc'`, `dxil library not found`, `failed to load dynamic library
+'dxcompiler'`. The toolchain comes from vcpkg's `directx-dxc` port, which installs
+`libdxcompiler.so` **and `libdxil.so`** on Linux and the DLL equivalents on Windows — so
+emission, signing and validation are all reachable on the platform this project is developed on.
+
+**It goes in `vcpkg.json` unconditionally, and every build emits both blob sets.** The argument
+is the feedback loop rather than the artifacts: development happens on Linux,
+`scripts/precommit.sh` is what this project's rules treat as proof a change is done, and a check
+that cannot run where the work happens is the same shape as a check that always passes. A Slang
+construct that SPIR-V accepts and DXIL rejects then fails in the edit that caused it, on the
+machine that made it.
+
+The cost is honest — a dependency and a second blob set on a platform that can never load them.
+It is small: shader compilation is a fraction of a second per shader, so build time is not the
+deciding factor in either direction.
+
+**Rejected: Windows-only emission.** It leaves the DXIL half of the content pipeline exercised
+in three of six CI jobs and in none of the local ones, which means every shader edit's
+consequence for the target this stage exists to enable is discovered on a push at the earliest.
+
+### D28 — The Windows GPU job belongs to Stage 7.7, and Windows CI asks for D3D12
+
+The first draft put "Windows GPU coverage on WARP" in 7.6. **WARP is a D3D12 adapter**, reachable
+only through the backend 7.7 builds, so in 7.6 the item could only have meant Vulkan on Windows —
+and the runner has no Vulkan ICD at all. Supplying one means pinning a third-party Mesa build in
+CI, which is a supply-chain surface `vcpkg.json` has otherwise kept clear.
+
+**So the job moves to 7.7, and every Windows job there runs `--backend d3d12` explicitly.**
+D25 is unchanged: Vulkan is still the default everywhere, and asking for D3D12 by name in CI is
+what makes CI the backend's routine exercise. Vulkan on Windows keeps the coverage it has today,
+which is compilation and the unit tests.
+
+**The cost is accepted rather than argued away.** Stage 7.6 ends without the Windows job its own
+definition of done originally named, and 7.7's first CI run is then also the backend's first CI
+run — the confound that the 7.5/7.6 split exists to avoid. What replaces it is a **local Windows
+install**, used to build and test D3D12 work as it is written, so the backend runs on real
+hardware long before a job exists to run it.
+
+### D29 — Shader bindings are pinned in the source, in D3D12 spelling
+
+With only `[[vk::binding]]`, Slang assigns HLSL registers implicitly: everything lands in
+`space0`, and the numbering follows declaration order. The descriptor-set structure the neutral
+bind groups describe is silently lost, and inserting one resource renumbers every resource
+declared after it — on D3D12 a wrong-resource read rather than an error, with nothing at build
+time to say so. DXIL that compiles and validates in that state satisfies a gate while being
+unusable, which is the failure shape this project has already been bitten by once.
+
+**Every shader resource therefore carries an explicit register, and bind group index N is
+register space N.** `[[vk::binding]]` goes away entirely, replaced by four flags on the SPIR-V
+compile — `-fvk-b-shift 0 all`, and the same for `t`, `s` and `u` — which make Slang derive the
+Vulkan binding from the register instead. Verified: the SPIR-V produced this way carries exactly
+the sets and bindings the attributes produce today, so it is a spelling change with no Vulkan-side
+effect. One annotation per declaration rather than two, in the vocabulary D13 already chose for
+everything else, and the only one of the two that can express a space.
+
+Two constraints come with it.
+
+**The register index must be unique across classes within a space** — `s3` beside `t0`–`t2`
+rather than `s0` — because Vulkan has one binding namespace per descriptor set where HLSL has
+four. **A collision is silent.** Written deliberately, it compiled clean under
+`-warnings-as-errors all` and aliased the sampler onto the texture's binding; Vulkan validation
+would catch the resulting layout mismatch at pipeline creation, but the build says nothing.
+
+**`[[vk::push_constant]]` stays**, on the four declarations that have it. It is not a duplicate
+binding: Vulkan push constants are a storage class rather than a descriptor, and without the
+attribute the declaration becomes an ordinary uniform buffer. The D3D12 side needs no equivalent,
+because root constants *appear* to a shader as a constant buffer at a `b` register — the root
+signature, not the declaration, is what decides that slot holds constants rather than a table.
+
+**Push constants live in one fixed reserved space**, its number defined once in `Common.h` so
+that C++ and Slang name the same constant rather than agreeing by coincidence. *Rejected: one
+past the last bind group*, which moves the moment a layout gains a group — the renumbering hazard
+this decision exists to remove, reintroduced somewhere smaller. *Rejected: inside the space of
+the bind group it accompanies*, which reads naturally and makes a pipeline-layout property share
+a namespace with a separately-managed object whose own `b0` would then collide.
+
+### D30 — Layout agreement is a unit test over reflection, not a `static_assert`
+
+Part IV's step 48 asserts `sizeof` and `offsetof` in C++, which is C++ asserting things about
+C++. Sharing the declaration removes the transcription error; it does not touch the layout-rule
+divergence, and a `static_assert` cannot see what either shader target thinks.
+
+`slangc -reflection-json` reports every field's offset and size, per target. **A unit test reads
+it and compares against `offsetof` computed in C++**, failing with the field name, the two
+offsets, and which target disagreed. `cmake/Shaders.cmake` emits the JSON beside each blob.
+
+Measured, and worth recording because it sets what the test is for: across the 66 fields that
+carry an offset in `opaque.slang`, **the HLSL and SPIR-V reflections agree everywhere**. The
+current structs are 16-byte-friendly with explicit padding and survive both rule sets by
+construction, and `bool` lands at four bytes on both, matching the C++ `int`. So the divergence is
+**latent rather than present**: the test is insurance against the next edit, not a fix, and
+without it the first struct that breaks the coincidence breaks it silently on one backend.
+
+**Rejected: generating the assertions from the reflection at build time.** It moves the failure
+to compile time, which is better, and pays for it with a build-graph edge that does not exist
+today — the engine's compilation would have to wait on the shader compilation, which currently
+runs as an independent target. Every other check in this repository is a separate target or
+script for the same reason.
+
+### D31 — `ShaderTypes.h` speaks HLSL, and covers the constant blocks only
+
+The shared header declares `float4`, `float4x4` and `int`, with C++ aliasing glm into those names
+inside `#ifdef __cplusplus` — which Slang's preprocessor skips, so its half of the file is
+invisible to the shader compiler. Verified on both compilers, field offsets matching.
+
+**The language with the tighter constraints sets the vocabulary**, and the aliases are
+transparent: the C++ side keeps every glm operation it has today, since a `float4` *is* a
+`glm::vec4`. D13's D3D12-first naming points the same way.
+
+**Scope is the constant and push-constant blocks**: `GlobalBuffer`, `CameraData`, `LightData`,
+the two light `Data` structs, and the three push-constant blocks. Eight declarations collapse to
+five, and the duplicate `MaterialPushConstant` that `opaque.slang` and `weightedBlendedOIT.slang`
+each carry disappears as a side effect.
+
+Two riders. **`bool` cannot appear in a shared block** — one byte in C++, four in both shader
+targets — so the Slang side's `bool` fields become `int`, which is what the C++ already declares.
+And matrices need a comment rather than a decision: `glm::mat4` and `float4x4` are both 64 bytes,
+so what keeps them interchangeable is the transposition convention, which belongs next to the
+shared declaration rather than in one shader's header comment.
+
+### D32 — Vertex input is checked, not shared — and the seam cannot express it yet
+
+`VS_In` carries semantics (`float3 Pos : POSITION0`) that C++ has no way to express, so the
+vertex structs cannot become the same struct. What is hand-mirrored is
+`GetAttributeDescriptions()`'s locations and formats, and the reflection reports both — an
+`index` per input, plus a scalar type and element count that map onto `Rhi::Format`. **The test
+asserts those**, which catches the live hazard: insert a field into `VS_In` and every location
+after it shifts while the C++ table keeps the old numbers.
+
+**Semantics are excluded**, because there is no C++ side to compare them against. An assertion on
+`POSITION1` would agree only with a constant typed beside it.
+
+**And that absence is a gap in the seam.** `VertexAttribute::Location` is Vulkan's spelling;
+`D3D12_INPUT_ELEMENT_DESC` matches on semantic *name and index*, which the neutral description
+does not carry, so an input layout cannot be filled in from what the RHI's public API says today.
+Stage 7.5 neutralised the seam and this survived it — the same class of thing as D22's combined
+image samplers, and found the same way. Three candidate answers, all of which want a backend in
+front of them: a semantic field on `VertexAttribute`; a convention synthesising a name from the
+location; or the backend reading semantics from reflection at pipeline creation. **Recorded here,
+decided in 7.7.**
+
 ---
 
 ## 3. The step sequence
@@ -887,9 +1032,10 @@ steps 6 and 7 each had shrunk to binding geometry and issuing a draw.
 
 ## 4. Stage 7.6 — backend prerequisites
 
-Three seams the backend needs that are not the RHI's, plus two things that pair with them.
-They are a separate stage rather than extra steps of 7.5 for one reason: **verification
-independence.** If they lived inside 7.5, that stage's own steps would be checked by machinery
+Four things the backend needs that are not the RHI's — the shader pipeline it loads from, the
+instrument that will compare it against Vulkan, the switch that makes a release run assert, and
+the one struct-layout hazard a second target introduces. They are a separate stage rather than
+extra steps of 7.5 for one reason: **verification independence.** If they lived inside 7.5, that stage's own steps would be checked by machinery
 being built in the same stage, and a bug in the new comparison tooling and a bug in step 10
 would look identical. Keeping them apart means every step above is verified by the harness that
 already works, and 7.6 is verified against a codebase that is not moving.
@@ -899,11 +1045,10 @@ exists.
 
 | # | What | Why it is here | Size |
 |---|---|---|---|
-| 1 | **DXIL emission.** A second `slangc` target with an `sm_6_x` profile, a second output set, and a validation gate equivalent to `spirv-val`. Pairs with D24's per-stage packaging, which lands at 7.5 step 6 | `cmake/Shaders.cmake` is SPIR-V only. The first draft put this in the backend stage; that is wrong, because it is build-system and content-pipeline work with its own failure modes, and doing it there means finding out whether Slang's DXIL path handles `pbr.slangh` halfway through writing a device | M–L |
+| 1 | **DXIL emission.** A second `slangc` target with an `sm_6_x` profile, a second output set, and a validation gate equivalent to `spirv-val`. Carries D24's per-stage packaging, which step 6 deferred to here rather than restructuring `cmake/Shaders.cmake` twice — so `opaque.spv` becomes `opaque.vert.spv` and `opaque.frag.spv` in the same work | `cmake/Shaders.cmake` is SPIR-V only. The first draft put this in the backend stage; that is wrong, because it is build-system and content-pipeline work with its own failure modes, and doing it there means finding out whether Slang's DXIL path handles `pbr.slangh` halfway through writing a device | M–L |
 | 2 | **The comparison script**, with tolerance built in from the start (D26) | Already `backlog.md`'s P1 row — decode both PNGs, report the diff bounding box, diff the `counters`. Today `CLAUDE.md` walks a human through PIL by hand | S–M |
-| 3 | **Windows GPU coverage on WARP.** `ctest -L gpu` and `-L scene` on the Windows jobs, with the adapter explicitly selected rather than enumerated — the same discipline `VK_DRIVER_FILES` gives on Linux | All three Windows jobs run `ctest -L unit` and stop. Under D25, Vulkan is always the default, so **CI is the only thing that will ever run D3D12 routinely** | M |
-| 4 | **Runtime-selectable validation** | `backlog.md` P2. The engine gates validation on `NDEBUG`, so a release run reports zero validation errors trivially. Two backends mean two validation surfaces and a Windows release job worth having assert rather than silently pass | S |
-| 5 | **Step 48 — `ShaderTypes.h` shared with Slang, extended with per-target layout assertions** | See below | M |
+| 3 | **Runtime-selectable validation** | `backlog.md` P2. The engine gates validation on `NDEBUG`, so a release run reports zero validation errors trivially. Two backends mean two validation surfaces, and 7.7's Windows release job is worth having assert rather than silently pass — which it cannot do unless this lands first | S |
+| 4 | **Step 48 — `ShaderTypes.h` shared with Slang, extended with per-target layout assertions** | See below | M |
 
 **Step 48 needs extending, and the reason is the only silent-corruption path a second backend
 introduces.** Part IV's step 48 shares the declaration between C++ and Slang, which removes the
@@ -913,9 +1058,36 @@ not agree in every case. So a C++ struct that matches the SPIR-V layout can sile
 the DXIL one and corrupt on exactly one backend. Sharing the declaration is necessary;
 asserting offsets *per target* is what actually closes it.
 
-**Definition of done for 7.6:** every shader compiles to DXIL and passes its validator; two
-images that are not bit-identical can be compared and the result reported with its measured
-delta; a GPU test runs on a Windows CI job; a release build can be asked for validation.
+**Definition of done for 7.6:** every shader compiles to DXIL and passes its validator, with its
+registers and spaces where D29 says they are; two images that are not bit-identical can be
+compared and the result reported with its measured delta; a release build can be asked for
+validation; and a struct whose C++ and shader layouts disagree fails a test rather than corrupting
+on one backend.
+
+**The Windows GPU job is no longer here.** D28 moved it to 7.7, where WARP is reachable at all.
+That is the one item the first draft's definition of done named which this stage does not
+deliver.
+
+### 4.1 What the interview has not reached
+
+§4 was written during Stage 7.5's grill, as a sketch of the stage after it. The interview that
+turned it into a plan ran on 6 September 2026 and produced D27–D32; it stopped partway, so this
+is the frontier as it stood, rather than a list of things judged unimportant. **Nothing below is
+decided, and none of it should be settled by the first person to trip over it mid-implementation.**
+
+| # | Open decision | Blocks |
+|---|---|---|
+| 1 | The shader model for the DXIL target — `sm_6_0` through `sm_6_6`. It sets the minimum hardware the D3D12 backend will ever run on | item 1 |
+| 2 | Entry-point naming once blobs are per-stage: keep `vertMain`/`fragMain`, or let each blob's entry become `main` | item 1 |
+| 3 | The comparison script's language and dependency — Python with Pillow, which nothing in CI installs today, against a C++ tool or a test case | item 2 |
+| 4 | What the tolerance constants are, given that no cross-backend data exists to set them from until 7.7 | item 2 |
+| 5 | Whether the script replaces the pixel comparison already inside `SceneLaunchTests.cpp`, or sits beside it | item 2 |
+| 6 | Runtime validation's flag shape, its default per build configuration, whether sync validation gets a switch of its own, and whether the Linux release job then gains `ctest -L scene` | item 3 |
+| 7 | How many shaders the reflection test covers — all six, or only those carrying shared blocks | item 4 |
+| 8 | Device info in the run report: §6 says it unblocks here, and §4 never listed it. In or out | the stage's scope |
+| 9 | Step order and sizing. 7.5 ran as twelve numbered steps for reasons §3 argues; 7.6 is four unordered items | all of it |
+
+Items 1 and 2 are the only ones that block starting.
 
 ---
 
@@ -929,7 +1101,14 @@ Out of scope for this document beyond three constraints that are decided:
 - **Neutral descriptions are checked against the D3D12 documentation as they are implemented**,
   not inferred from the Vulkan side. `CLAUDE.md`'s rule about never guessing at graphics API
   semantics applies to the API that is not in the tree yet, and applies hardest there.
-- **Vulkan stays the default** (D25). The backend's routine exercise is 7.6's Windows CI job.
+- **Vulkan stays the default** (D25). The backend's routine exercise is CI, and that job lives
+  here rather than in 7.6: **WARP is a D3D12 adapter**, so there was nothing for a Windows GPU job
+  to run until this stage exists (D28). Every Windows job asks for `--backend d3d12` by name.
+  Until the job exists, a local Windows install is what the D3D12 work is built and tested on.
+- **Two things are already recorded as this stage's to decide.** The vertex-input seam — D32,
+  where `VertexAttribute::Location` cannot fill in a `D3D12_INPUT_ELEMENT_DESC` — and the
+  cross-backend tolerance constants of D26, which cannot be chosen before there are two backends
+  to measure the difference between.
 
 DXVK on Linux — running the D3D12 path over Vulkan — is a stretch goal in `backlog.md`, not
 part of this.
@@ -1061,10 +1240,27 @@ checked against its own failure — remove the hazard and the case fails — so 
 control rather than another assertion that cannot fail. Every "zero validation errors" claim in
 the gpu suite now rests on something.
 
-**2. What does Slang's DXIL path require?** Profile and target flags, whether a separate
-validator is needed, and what the emitted DXIL needs at load time. Determines the size of Stage
-7.6's first item, and should be answered from the Slang documentation rather than by
-experiment-until-it-links.
+**2. What does Slang's DXIL path require?** Partly answered on 6 September 2026, and the
+remainder is Stage 7.6's to resolve before its first step rather than during it.
+
+*Established:* vcpkg's `shader-slang` cannot emit DXIL at all as installed — `failed to load
+downstream compiler 'dxc'` — and `directx-dxc` is the port that supplies it, `libdxcompiler.so`
+plus `libdxil.so` on Linux and the DLLs on Windows. `-target hlsl` needs none of that, which is
+what made D29 and D30 verifiable before the dependency was added.
+
+*Still open, all of them facts to go and measure rather than decisions:*
+
+- Whether Slang finds `libdxcompiler.so` in vcpkg's install tree, or needs it on a specific path.
+- Whether `libdxil.so` signs and validates on Linux, and therefore **what plays `spirv-val`'s role
+  in the DXIL build step.** `cmake/Shaders.cmake`'s comment argues that gate must be fatal rather
+  than optional; the DXIL equivalent inherits that argument and needs a mechanism to carry it.
+- Whether `pbr.slangh` survives the DXIL path at all. It is the largest shared header and has only
+  ever been compiled for one target.
+- Whether any shader needs its register indices renumbered to satisfy D29's cross-class
+  uniqueness rule — a survey of six files, not a design question.
+- Whether the per-stage split and the register respelling leave the baseline pixel-identical.
+  Expected, since D29 changes no SPIR-V, and to be demonstrated by running it rather than
+  asserted.
 
 ---
 
@@ -1103,7 +1299,7 @@ experiment-until-it-links.
 **This document is kept after the stage ends.** Stage 7's plan was deleted at its stage's close
 because it records how to build things that will by then be built. `rhi_extraction_plan.md` was
 kept past Stage 5 because its decisions still govern a seam that outlived it. This one is the
-second kind: D14–D26 say what the RHI's public API is allowed to express about recording,
+second kind: D14–D32 say what the RHI's public API is allowed to express about recording,
 binding, pipelines and submission, and a D3D12 backend — and everything written against the seam
 afterwards — has to respect them.
 
@@ -1119,7 +1315,7 @@ What that means in practice:
   architecture plan's Part III and outlives this document.
 - **Both plans retire together, into one permanent `docs/rhi.md`.** Decided at step 12, along
   with the decision not to do it yet. This document is not the host: it is a stage plan that
-  happens to carry decisions, and so is `rhi_extraction_plan.md`. The whole D-series — D0–D26,
+  happens to carry decisions, and so is `rhi_extraction_plan.md`. The whole D-series — D0–D32,
   less the two superseded — belongs in a file kept for the lifetime of the project, with both
   step lists dropped and `rhi_extraction_plan.md` §10's promotion list as the outline.
   The numbering continuity §2 was careful about is what makes that a merge rather than a

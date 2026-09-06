@@ -131,10 +131,6 @@ set(transitional_headers
     # The escape hatch itself (D9): instance/device/queue for ImGui, and the
     # VkFormat/VkPipelineCache accessors the app's pipeline creation needs.
     "VulkanNative.h"
-    # Compute pipeline creation stays Vulkan-side until CloudSystem's own bind
-    # groups are neutral, which is what its pipeline layout is built from.
-    # Removed by Stage 7.5 step 7; the graphics builder went at step 6.
-    "ComputePipelineBuilder.h"
     # Names Vulkan objects the application still creates for itself. Shrinks as
     # those move behind the RHI; it is a template, so it cannot move to src/.
     "DebugNames.h"
@@ -204,9 +200,7 @@ set(transitional_allowlist
     "engine/engine/src/Engine.cpp|VulkanNative.h|The frame loop still records raw draws — last use goes at step 10"
     "engine/engine/src/Engine.cpp|DebugNames.h|Names the pools, sets and sync objects the engine still owns (step 12)"
     "engine/engine/src/CloudSystem.cpp|VulkanNative.h|Raw dispatch recording needs the device — goes at step 11"
-    "engine/engine/src/CloudSystem.cpp|ComputePipelineBuilder.h|Compute pipeline creation is Vulkan-side until D15 (step 7)"
     "engine/engine/src/CloudSystem.cpp|CommandListUtil.h|The noise bake is a dispatch, not a copy — needs steps 2 and 11"
-    "engine/engine/src/CloudSystem.cpp|DebugNames.h|Names the bake's pipeline and descriptor set (step 12)"
     "tests/unit/rhi/SwapchainUtilTests.cpp|SwapchainUtil.h|Surface states a real display cannot be put into on demand"
     "tests/gpu/rhi/DeviceTests.cpp|VulkanNative.h|The escape hatch is what these cases assert on"
 )

@@ -34,6 +34,10 @@ public:
     void End() override;
 
     void SetPipeline(GraphicsPipelineHandle pipeline) override;
+    void SetPipeline(ComputePipelineHandle pipeline) override;
+    void SetComputeBindGroup(PipelineLayoutHandle layout, uint32_t slot,
+                             BindGroupHandle group) override;
+    void Dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ) override;
     void SetBindGroup(PipelineLayoutHandle layout, uint32_t slot, BindGroupHandle group) override;
 
     void PushConstants(PipelineLayoutHandle layout, ShaderStage stages, uint32_t offset,

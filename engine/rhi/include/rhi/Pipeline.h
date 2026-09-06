@@ -135,6 +135,19 @@ struct DepthState
     CompareOp Compare = CompareOp::Less;
 };
 
+/**
+ * A compute pipeline: a layout and one shader, and nothing else. There is no
+ * fixed-function state to describe, which is why this is not a variation on the
+ * graphics description.
+ */
+struct ComputePipelineDesc
+{
+    PipelineLayoutHandle Layout{};
+    ShaderStageDesc Shader;
+
+    std::string DebugName;
+};
+
 struct GraphicsPipelineDesc
 {
     PipelineLayoutHandle Layout{};

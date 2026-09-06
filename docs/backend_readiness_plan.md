@@ -788,9 +788,31 @@ applies to every step here without anything being switched on first.
 
 - **Do:** a neutral compute pipeline description, consuming the same layouts. `CloudSystem`'s
   dispatch pipeline and its noise-bake pipeline both move.
-- **Retires:** `ComputePipelineBuilder.h` and `CloudSystem.cpp`'s entry for it.
+- **Retires:** `ComputePipelineBuilder.h` and `CloudSystem.cpp`'s entries for it and for
+  `DebugNames.h`. **4 transitional headers used from 7 sites.**
 - **Verify:** baseline unchanged.
 - **Size:** M
+- **Done.** Larger than M, because of a dependency the plan did not see.
+
+  **`CloudSystem`'s two bind group layouts moved here, not at step 11.** A compute pipeline
+  needs a pipeline layout, a pipeline layout is built from bind group layouts, and
+  `CreatePipelineLayout` takes handles — so its layouts had to be neutral before its pipelines
+  could be. That pulled in everything D14's second correction had assigned to step 11:
+  `BindingType::UnorderedAccessTexture` for the `RWTexture2D`/`RWTexture3D` storage images, and
+  a third combined-image-sampler split, in `clouds.comp.slang`. **Step 11 shrinks to the
+  dispatch recording it names**, and the pinned inventory is complete at six layouts.
+
+  `SetPipeline`, `SetComputeBindGroup` and `Dispatch` are separate compute entry points rather
+  than shared ones, because both APIs keep the two apart — Vulkan by bind point, D3D12 by having
+  `SetComputeRootSignature` and `SetGraphicsRootSignature` be different calls — so one call
+  would have to guess which the caller meant.
+
+  **A defect from step 4 surfaced here and is fixed.** The RHI's bind group descriptor pool was
+  sized for uniform buffers, sampled images and samplers, and storage images were the first
+  binding type it had never been asked for. It showed up as two validation *warnings* and a
+  changed `validationWarnings` counter — not an error, because the specification lets an
+  implementation fail to report the out-of-pool condition it should. The pool now carries a size
+  for every `BindingType`.
 
 ### 8 — The composite recorder
 

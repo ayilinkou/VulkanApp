@@ -124,6 +124,16 @@ public:
                               BindGroupHandle group) = 0;
 
     /**
+     * The compute counterparts. Separate calls because both APIs keep graphics
+     * and compute bindings apart -- Vulkan by bind point, D3D12 by having
+     * SetComputeRootSignature and SetGraphicsRootSignature be different entry
+     * points -- so one call would have to guess which the caller meant.
+     */
+    virtual void SetPipeline(ComputePipelineHandle pipeline) = 0;
+    virtual void SetComputeBindGroup(PipelineLayoutHandle layout, uint32_t slot,
+                                     BindGroupHandle group) = 0;
+
+    /**
      * Constants written straight into the command list.
      *
      * Takes the layout for the same reason SetBindGroup does: both APIs bind
@@ -136,6 +146,9 @@ public:
      */
     virtual void PushConstants(PipelineLayoutHandle layout, ShaderStage stages, uint32_t offset,
                                std::span<const std::byte> data) = 0;
+
+    /** Dispatches a compute shader, in thread groups rather than in threads. */
+    virtual void Dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ) = 0;
 
     /**
      * Viewport and scissor are always dynamic. Both APIs set them on the command

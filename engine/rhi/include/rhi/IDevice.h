@@ -220,6 +220,10 @@ public:
                                                           IPipelineCache& cache) = 0;
     virtual void Destroy(GraphicsPipelineHandle handle) = 0;
 
+    virtual ComputePipelineHandle CreateComputePipeline(const ComputePipelineDesc& desc,
+                                                        IPipelineCache& cache) = 0;
+    virtual void Destroy(ComputePipelineHandle handle) = 0;
+
     /**
      * --- Pipelines ---
      *

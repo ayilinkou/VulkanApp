@@ -87,10 +87,14 @@ public:
     GraphicsPipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc& desc,
                                                   IPipelineCache& cache) override;
     void Destroy(GraphicsPipelineHandle handle) override;
+    ComputePipelineHandle CreateComputePipeline(const ComputePipelineDesc& desc,
+                                                IPipelineCache& cache) override;
+    void Destroy(ComputePipelineHandle handle) override;
 
     /** Raw objects for the transitional recording path. */
     vk::PipelineLayout GetPipelineLayout(PipelineLayoutHandle handle) const;
     vk::Pipeline GetPipeline(GraphicsPipelineHandle handle) const;
+    vk::Pipeline GetPipeline(ComputePipelineHandle handle) const;
 
     FenceHandle CreateFence(const FenceDesc& desc) override;
     void Destroy(FenceHandle handle) override;
@@ -312,6 +316,7 @@ private:
     Core::HandlePool<VulkanPipelineLayout, PipelineLayoutTag> m_PipelineLayouts;
     Core::HandlePool<VulkanShaderModule, ShaderModuleTag> m_ShaderModules;
     Core::HandlePool<VulkanGraphicsPipeline, GraphicsPipelineTag> m_GraphicsPipelines;
+    Core::HandlePool<VulkanComputePipeline, ComputePipelineTag> m_ComputePipelines;
 
     QueueFamilies m_QueueFamilies;
 

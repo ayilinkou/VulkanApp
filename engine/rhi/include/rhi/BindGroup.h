@@ -32,14 +32,17 @@ enum class BindingType : uint8_t
      * and its read-write counterpart RWTexture2D, so the plain name meaning the
      * read-only one is the convention anyone reading these shaders already has.
      * Vulkan's "sampled image" is the term this deliberately does not use (D13).
-     *
-     * The counterpart is absent because nothing neutral needs it yet.
-     * CloudSystem writes storage images from compute, so UnorderedAccessTexture
-     * arrives when that set moves behind this API -- and when it does, the pair
-     * reads the way TextureLayout's ShaderResource and UnorderedAccess already
-     * do.
      */
     Texture,
+
+    /**
+     * Read-write, and named for D3D12's unordered access view -- which is also
+     * how the barrier vocabulary already spells it (TextureLayout::UnorderedAccess).
+     * HLSL writes RWTexture2D; Vulkan calls the descriptor a storage image, and
+     * that is the term this deliberately does not use (D13).
+     */
+    UnorderedAccessTexture,
+
     Sampler,
 };
 

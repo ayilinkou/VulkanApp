@@ -60,4 +60,5 @@ using PipelineLayoutHandle = Core::Handle<struct PipelineLayoutTag>;
 using ShaderModuleHandle = Core::Handle<struct ShaderModuleTag>;
 
 using GraphicsPipelineHandle = Core::Handle<struct GraphicsPipelineTag>;
+using ComputePipelineHandle = Core::Handle<struct ComputePipelineTag>;
 } // namespace Hikari::Rhi

@@ -125,6 +125,17 @@ public:
 
     void Destroy(GraphicsPipelineHandle handle) override { DestroyedPipelines.push_back(handle); }
 
+    ComputePipelineHandle CreateComputePipeline(const ComputePipelineDesc&,
+                                                IPipelineCache&) override
+    {
+        return ComputePipelineHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
+    }
+
+    void Destroy(ComputePipelineHandle handle) override
+    {
+        DestroyedComputePipelines.push_back(handle);
+    }
+
     FenceHandle CreateFence(const FenceDesc&) override
     {
         return FenceHandle::FromIndexAndGeneration(m_NextIndex++, 0u);
@@ -176,6 +187,7 @@ public:
     std::vector<PipelineLayoutHandle> DestroyedPipelineLayouts;
     std::vector<ShaderModuleHandle> DestroyedShaderModules;
     std::vector<GraphicsPipelineHandle> DestroyedPipelines;
+    std::vector<ComputePipelineHandle> DestroyedComputePipelines;
 
 private:
     DeviceCaps m_Caps{};

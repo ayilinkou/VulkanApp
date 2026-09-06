@@ -534,23 +534,22 @@ private:
         CreateRenderTargets();
 
         // TODO: read from scene
-        CloudSystemCreateInfo cloudCreateInfo{
-            .RhiDevice = *m_RhiDevice,
-            .PipelineCache = *m_PipelineCache,
-            .ContentPaths = m_Paths,
-            .GlobalSetLayout = NativeSetLayout(m_GlobalLayout.Get()),
-            .DepthSetLayout = NativeSetLayout(m_DepthLayout.Get()),
-            .CommandPool = m_GenericCommandPool,
-            // The device reports whether an async compute
-            // queue exists (DeviceCaps::
-            // bHasDedicatedComputeQueue); moving the cloud
-            // dispatches onto it needs them to own their own
-            // submission and cross-queue synchronization
-            // first, so they share the graphics queue.
-            .ComputeQueue = m_GraphicsQueue,
-            .SwapchainWidth = SwapchainExtent().width,
-            .SwapchainHeight = SwapchainExtent().height,
-            .FramesInFlight = m_Config.FramesInFlight};
+        CloudSystemCreateInfo cloudCreateInfo{.RhiDevice = *m_RhiDevice,
+                                              .PipelineCache = *m_PipelineCache,
+                                              .ContentPaths = m_Paths,
+                                              .GlobalSetLayout = m_GlobalLayout.Get(),
+                                              .DepthSetLayout = m_DepthLayout.Get(),
+                                              .CommandPool = m_GenericCommandPool,
+                                              // The device reports whether an async compute
+                                              // queue exists (DeviceCaps::
+                                              // bHasDedicatedComputeQueue); moving the cloud
+                                              // dispatches onto it needs them to own their own
+                                              // submission and cross-queue synchronization
+                                              // first, so they share the graphics queue.
+                                              .ComputeQueue = m_GraphicsQueue,
+                                              .SwapchainWidth = SwapchainExtent().width,
+                                              .SwapchainHeight = SwapchainExtent().height,
+                                              .FramesInFlight = m_Config.FramesInFlight};
         m_CloudSystem = std::make_unique<CloudSystem>(cloudCreateInfo);
 
         CreateGlobalBindGroups();
@@ -1405,8 +1404,7 @@ private:
         Rhi::ICommandList& list = BeginRecording(frame.CloudCommands);
 
         m_MainThreadBarrierCounts += m_CloudSystem->RecordDispatch(
-            list, m_FrameIndex, NativeSet(frame.GlobalBindGroup.Get()),
-            NativeSet(frame.DepthBindGroup.Get()));
+            list, m_FrameIndex, frame.GlobalBindGroup.Get(), frame.DepthBindGroup.Get());
 
         list.End();
     }

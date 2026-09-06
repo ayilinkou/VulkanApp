@@ -551,6 +551,8 @@ vk::DescriptorType ToVkDescriptorType(BindingType type)
             return vk::DescriptorType::eUniformBuffer;
         case BindingType::Texture:
             return vk::DescriptorType::eSampledImage;
+        case BindingType::UnorderedAccessTexture:
+            return vk::DescriptorType::eStorageImage;
         case BindingType::Sampler:
             return vk::DescriptorType::eSampler;
     }
@@ -670,6 +672,13 @@ BindGroupHandle VulkanDevice::CreateBindGroup(const BindGroupDesc& desc)
                 write.pImageInfo = &imageInfos[i];
                 break;
             }
+            case BindingType::UnorderedAccessTexture:
+                // General, not ShaderReadOnly: a storage image is written, and
+                // both APIs need the resource in the state that permits it.
+                imageInfos[i] = vk::DescriptorImageInfo{.imageView = GetImageView(binding.View),
+                                                        .imageLayout = vk::ImageLayout::eGeneral};
+                write.pImageInfo = &imageInfos[i];
+                break;
             case BindingType::Sampler:
                 imageInfos[i] = vk::DescriptorImageInfo{.sampler = GetSampler(binding.Sampler)};
                 write.pImageInfo = &imageInfos[i];
@@ -977,6 +986,51 @@ void VulkanDevice::Destroy(GraphicsPipelineHandle handle)
     ReportStaleHandle(std::format("Rhi::VulkanDevice::Destroy(GraphicsPipelineHandle): handle "
                                   "{:#010x} is stale or was never valid.",
                                   handle.Value));
+}
+
+ComputePipelineHandle VulkanDevice::CreateComputePipeline(const ComputePipelineDesc& desc,
+                                                          IPipelineCache& cache)
+{
+    const VulkanShaderModule* pShader = m_ShaderModules.Get(desc.Shader.Module);
+    if (pShader == nullptr)
+    {
+        throw std::runtime_error(
+            std::format("Rhi::IDevice::CreateComputePipeline: '{}' names a stale shader module.",
+                        desc.DebugName));
+    }
+
+    const vk::ComputePipelineCreateInfo createInfo{
+        .stage = vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eCompute,
+                                                   .module = *pShader->Module,
+                                                   .pName = desc.Shader.EntryPoint.c_str()},
+        .layout = GetPipelineLayout(desc.Layout)};
+
+    VulkanComputePipeline pipeline{
+        vk::raii::Pipeline(m_Device, GetVkPipelineCache(&cache), createInfo)};
+
+    if (!desc.DebugName.empty())
+    {
+        SetVkDebugName(m_Device, *pipeline.Pipeline, vk::ObjectType::ePipeline,
+                       desc.DebugName.c_str());
+    }
+
+    return m_ComputePipelines.Create(std::move(pipeline));
+}
+
+void VulkanDevice::Destroy(ComputePipelineHandle handle)
+{
+    if (m_ComputePipelines.Release(handle))
+        return;
+
+    ReportStaleHandle(std::format("Rhi::VulkanDevice::Destroy(ComputePipelineHandle): handle "
+                                  "{:#010x} is stale or was never valid.",
+                                  handle.Value));
+}
+
+vk::Pipeline VulkanDevice::GetPipeline(ComputePipelineHandle handle) const
+{
+    const VulkanComputePipeline* pPipeline = m_ComputePipelines.Get(handle);
+    return pPipeline ? *pPipeline->Pipeline : vk::Pipeline{};
 }
 
 vk::PipelineLayout VulkanDevice::GetPipelineLayout(PipelineLayoutHandle handle) const
@@ -1634,9 +1688,13 @@ void VulkanDevice::CreateLogicalDevice(const DeviceRequirements& requirements)
     // Sized per set rather than per pool, and it grows: bind groups are created
     // at startup and rebuilt on resize, so the count is small but not a number
     // this layer should be asserting a ceiling on.
+    // One entry per BindingType, and every one of them: a pool without a size for
+    // a type it is asked to allocate is only a warning here, because some
+    // implementations fail to report the out-of-pool condition they should.
     static constexpr std::array kBindGroupSizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 1u},
         vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 4u},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 1u},
         vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1u}};
     m_BindGroupAllocator =
         std::make_unique<DescriptorAllocator>(m_Device, kBindGroupSizes, 16u, "Bind Groups");

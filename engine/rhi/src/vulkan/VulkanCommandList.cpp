@@ -68,6 +68,23 @@ void VulkanCommandList::SetPipeline(GraphicsPipelineHandle pipeline)
     m_Cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_Device.GetPipeline(pipeline));
 }
 
+void VulkanCommandList::SetPipeline(ComputePipelineHandle pipeline)
+{
+    m_Cmd.bindPipeline(vk::PipelineBindPoint::eCompute, m_Device.GetPipeline(pipeline));
+}
+
+void VulkanCommandList::SetComputeBindGroup(PipelineLayoutHandle layout, uint32_t slot,
+                                            BindGroupHandle group)
+{
+    m_Cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, m_Device.GetPipelineLayout(layout),
+                             slot, m_Device.GetDescriptorSet(group), nullptr);
+}
+
+void VulkanCommandList::Dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ)
+{
+    m_Cmd.dispatch(groupsX, groupsY, groupsZ);
+}
+
 void VulkanCommandList::SetBindGroup(PipelineLayoutHandle layout, uint32_t slot,
                                      BindGroupHandle group)
 {

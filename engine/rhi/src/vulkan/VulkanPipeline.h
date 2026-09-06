@@ -21,4 +21,10 @@ struct VulkanGraphicsPipeline
 {
     vk::raii::Pipeline Pipeline = nullptr;
 };
+
+/** What a ComputePipelineHandle resolves to. Separate pool, same vk::Pipeline. */
+struct VulkanComputePipeline
+{
+    vk::raii::Pipeline Pipeline = nullptr;
+};
 } // namespace Hikari::Rhi::Vulkan

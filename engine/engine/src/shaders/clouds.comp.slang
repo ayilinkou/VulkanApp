@@ -3,7 +3,10 @@
 
 [[vk::binding(0, 1)]] Texture2D<float> depthTexture;
 [[vk::binding(0, 2)]] RWTexture2D<float4> outputImage;
-[[vk::binding(1, 2)]] Sampler3D perlinWorley;
+[[vk::binding(1, 2)]] Texture3D<float> perlinWorley;
+// Separate from the texture: D3D12 keeps samplers in their own heap and has no
+// combined descriptor, so the RHI's binding model has none either.
+[[vk::binding(2, 2)]] SamplerState perlinWorleySampler;
 
 struct PushConstants
 {
@@ -37,11 +40,11 @@ float SampleDensity(float3 pos)
 	const float windSpeed = 0.1f;
 
 	float3 samplePos = pos * 0.00001f + pc.windVelocity * windSpeed * globalBuffer.Time;
-    float n = perlinWorley.SampleLevel(samplePos, 0).r;
+    float n = perlinWorley.SampleLevel(perlinWorleySampler, samplePos, 0).r;
 
     // low-frequency 2D perturbation of the layer bounds, so the boundary isn't a flat plane
     float2 boundaryNoiseCoord = pos.xz * 0.0003f + pc.windVelocity.xz * globalBuffer.Time * 0.5f;
-    float boundaryNoise = perlinWorley.SampleLevel(float3(boundaryNoiseCoord, 0.f), 0).r;
+    float boundaryNoise = perlinWorley.SampleLevel(perlinWorleySampler, float3(boundaryNoiseCoord, 0.f), 0).r;
     float heightOffset = (boundaryNoise - 0.5f) * 2.f * pc.boundaryDisplacement;
 
     float localMin = pc.minHeight + heightOffset;

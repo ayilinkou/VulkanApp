@@ -19,16 +19,36 @@
  */
 using namespace Hikari::Rhi;
 
-TEST_CASE("The renderer declares exactly four bind group layouts", "[engine][binding]")
+TEST_CASE("The renderer declares exactly six bind group layouts", "[engine][binding]")
 {
-    // Four of six. CloudSystem owns the other two -- a dispatch set and a
-    // noise-bake set, both holding storage images the binding vocabulary cannot
-    // yet describe. Each joins this file when it moves behind the neutral API
-    // rather than escaping it, and this count rises with them.
+    // All six the renderer has. Six across a whole renderer is what "narrow"
+    // means here (D14); a seventh is a conversation, which is the entire point
+    // of this file.
     CHECK(EngineBindGroups::kGlobal.size() == 1u);
     CHECK(EngineBindGroups::kComposite.size() == 5u);
     CHECK(EngineBindGroups::kDepth.size() == 1u);
     CHECK(EngineBindGroups::kMaterial.size() == 4u);
+    CHECK(EngineBindGroups::kCloudDispatch.size() == 3u);
+    CHECK(EngineBindGroups::kCloudBake.size() == 1u);
+}
+
+TEST_CASE("The cloud layouts bind storage images, not sampled ones", "[engine][binding]")
+{
+    // The dispatch writes its output volume and the bake writes the noise, so
+    // both are unordered access rather than read-only. Getting this wrong is not
+    // a build failure: a sampled-image descriptor where a storage one belongs is
+    // caught by validation, but only on a run that reaches the dispatch.
+    CHECK(EngineBindGroups::kCloudDispatch[0].Type == BindingType::UnorderedAccessTexture);
+    CHECK(EngineBindGroups::kCloudBake[0].Type == BindingType::UnorderedAccessTexture);
+
+    // The noise it samples is a plain texture with its sampler alongside, the
+    // third combined image sampler this stage has had to split (D22).
+    CHECK(EngineBindGroups::kCloudDispatch[1].Type == BindingType::Texture);
+    CHECK(EngineBindGroups::kCloudDispatch[2].Type == BindingType::Sampler);
+
+    // Compute only: nothing in the graphics pipeline reads either.
+    for (const BindGroupLayoutBinding& binding : EngineBindGroups::kCloudDispatch)
+        CHECK(binding.Visibility == ShaderStage::Compute);
 }
 
 TEST_CASE("Every material texture is optional, and the sampler is not", "[engine][binding]")

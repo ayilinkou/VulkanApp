@@ -86,4 +86,23 @@ inline constexpr std::array<BindGroupLayoutBinding, 1> kDepth{
     BindGroupLayoutBinding{.Slot = 0u,
                            .Type = BindingType::Texture,
                            .Visibility = ShaderStage::Pixel | ShaderStage::Compute}};
+/**
+ * The cloud dispatch's own set: the volume it writes, plus the noise texture and
+ * the sampler that reads it.
+ *
+ * Three bindings rather than two: the noise was a combined image sampler, which
+ * D3D12 has no descriptor for (D22), so it is a texture and a sampler now.
+ */
+inline constexpr std::array<BindGroupLayoutBinding, 3> kCloudDispatch{
+    BindGroupLayoutBinding{.Slot = 0u,
+                           .Type = BindingType::UnorderedAccessTexture,
+                           .Visibility = ShaderStage::Compute},
+    BindGroupLayoutBinding{
+        .Slot = 1u, .Type = BindingType::Texture, .Visibility = ShaderStage::Compute},
+    BindGroupLayoutBinding{
+        .Slot = 2u, .Type = BindingType::Sampler, .Visibility = ShaderStage::Compute}};
+
+/** The noise bake writes one volume and reads nothing. */
+inline constexpr std::array<BindGroupLayoutBinding, 1> kCloudBake{BindGroupLayoutBinding{
+    .Slot = 0u, .Type = BindingType::UnorderedAccessTexture, .Visibility = ShaderStage::Compute}};
 } // namespace EngineBindGroups

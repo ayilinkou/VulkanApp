@@ -1,5 +1,8 @@
 #include "PBRMaterial.h"
 
+#include <array>
+#include <span>
+
 #include "assimp/material.h"
 
 #include "AssetRegistry.h"
@@ -74,15 +77,21 @@ void PBRMaterial::CreateBindGroup(Rhi::IDevice& rhiDevice,
     // A slot is filled only when the material has that map. The layout marks all
     // three optional, so an absent one stays empty and the shader branches on a
     // push constant rather than reading a placeholder.
-    std::vector<Rhi::BindGroupBinding> bindings;
-    bindings.reserve(EngineBindGroups::kMaterial.size());
+    //
+    // A fixed array rather than a vector: the layout bounds this at four, so the
+    // count is known at compile time and a heap allocation per material buys
+    // nothing. It also avoids a GCC 13 false positive -- at -O3 it inlines a
+    // vector's push_back far enough to lose track of the reserved buffer and
+    // reports -Wstringop-overflow against a destination it thinks may be null.
+    std::array<Rhi::BindGroupBinding, EngineBindGroups::kMaterial.size()> bindings{};
+    size_t count = 0u;
 
     const auto bind = [&](uint32_t slot, const std::shared_ptr<Texture>& texture)
     {
         if (texture)
         {
-            bindings.push_back(Rhi::BindGroupBinding{
-                .Slot = slot, .Type = Rhi::BindingType::Texture, .View = texture->GetView()});
+            bindings[count++] = Rhi::BindGroupBinding{
+                .Slot = slot, .Type = Rhi::BindingType::Texture, .View = texture->GetView()};
         }
     };
 
@@ -90,12 +99,12 @@ void PBRMaterial::CreateBindGroup(Rhi::IDevice& rhiDevice,
     bind(TextureBinding::Normal, m_Normal);
     bind(TextureBinding::MetallicRoughness, m_MetallicRoughness);
 
-    bindings.push_back(
-        Rhi::BindGroupBinding{.Slot = 3u, .Type = Rhi::BindingType::Sampler, .Sampler = sampler});
+    bindings[count++] =
+        Rhi::BindGroupBinding{.Slot = 3u, .Type = Rhi::BindingType::Sampler, .Sampler = sampler};
 
     m_BindGroup = Rhi::UniqueHandle<Rhi::BindGroupHandle>(
         rhiDevice, rhiDevice.CreateBindGroup(Rhi::BindGroupDesc{
                        .Layout = materialLayout,
-                       .Bindings = bindings,
+                       .Bindings = std::span(bindings).first(count),
                        .DebugName = std::format("{} Material Bind Group", m_Name)}));
 }

@@ -7,9 +7,9 @@
 
 #include <core/Log.h>
 
+#include "vulkan/DebugNames.h"
 #include <rhi/BarrierPresets.h>
 #include <rhi/ICommandList.h>
-#include <rhi/vulkan/DebugNames.h>
 
 #include "vulkan/VulkanCommandList.h"
 #include "vulkan/VulkanConversions.h"
@@ -363,7 +363,7 @@ void VulkanUploadContext::Flush()
     // the previous flush.
     m_CopyPool.reset();
 
-    VulkanCommandList list(m_Device, *m_CopyCommandBuffer);
+    VulkanCommandList list(m_Device, *m_CopyCommandBuffer, QueueType::Copy);
     list.Begin();
 
     // Every texture barrier here covers the whole of each texture rather than

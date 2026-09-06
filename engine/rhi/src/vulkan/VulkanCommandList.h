@@ -28,7 +28,7 @@ class VulkanDevice;
 class VulkanCommandList final : public ICommandList
 {
 public:
-    VulkanCommandList(VulkanDevice& device, vk::CommandBuffer cmd);
+    VulkanCommandList(VulkanDevice& device, vk::CommandBuffer cmd, QueueType queue);
 
     void Begin() override;
     void End() override;
@@ -38,6 +38,11 @@ public:
     void SetComputeBindGroup(PipelineLayoutHandle layout, uint32_t slot,
                              BindGroupHandle group) override;
     void Dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ) override;
+    void SetVertexBuffer(uint32_t slot, BufferHandle buffer, uint64_t offset) override;
+    void SetIndexBuffer(BufferHandle buffer, IndexFormat format, uint64_t offset) override;
+    void SetCullMode(CullMode mode) override;
+    void DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex,
+                     int32_t vertexOffset, uint32_t firstInstance) override;
     void SetBindGroup(PipelineLayoutHandle layout, uint32_t slot, BindGroupHandle group) override;
 
     void PushConstants(PipelineLayoutHandle layout, ShaderStage stages, uint32_t offset,
@@ -62,8 +67,19 @@ private:
     VulkanDevice& m_Device;
     vk::CommandBuffer m_Cmd;
 
+    /**
+     * The queue type the allocator this came from was created for. Carried so
+     * that a submission can refuse a list from the wrong one: a command buffer
+     * may only be submitted to a queue of the family it was allocated from, and
+     * neither the driver nor validation reliably says so.
+     */
+    QueueType m_Queue;
+
 public:
     /** The buffer this records into, for the native escape hatch. */
     vk::CommandBuffer Native() const { return m_Cmd; }
+
+    /** The queue type this list may be submitted to, and no other. */
+    QueueType Queue() const { return m_Queue; }
 };
 } // namespace Hikari::Rhi::Vulkan

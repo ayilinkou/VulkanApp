@@ -16,7 +16,7 @@
 
 #include <core/Log.h>
 
-#include <rhi/vulkan/DebugNames.h>
+#include "vulkan/DebugNames.h"
 
 #include "vulkan/OffscreenTarget.h"
 #include "vulkan/SwapchainTarget.h"
@@ -197,6 +197,15 @@ VulkanDevice::~VulkanDevice()
 void VulkanDevice::WaitIdle()
 {
     m_Device.waitIdle();
+}
+
+uint32_t VulkanDevice::GetQueueFamily(QueueType role) const
+{
+    // Mirrors GetQueue exactly, and must keep doing so.
+    if (role == QueueType::Copy && *m_CopyQueue)
+        return m_QueueFamilies.Copy;
+
+    return m_QueueFamilies.Graphics;
 }
 
 vk::raii::Queue& VulkanDevice::GetQueue(QueueType role)
@@ -750,20 +759,6 @@ vk::BlendOp ToVkBlendOp(BlendOp op)
     throw std::runtime_error("Rhi::VulkanDevice: unmapped BlendOp.");
 }
 
-vk::CullModeFlags ToVkCullMode(CullMode mode)
-{
-    switch (mode)
-    {
-        case CullMode::None:
-            return vk::CullModeFlagBits::eNone;
-        case CullMode::Front:
-            return vk::CullModeFlagBits::eFront;
-        case CullMode::Back:
-            return vk::CullModeFlagBits::eBack;
-    }
-
-    throw std::runtime_error("Rhi::VulkanDevice: unmapped CullMode.");
-}
 } // namespace
 
 PipelineLayoutHandle VulkanDevice::CreatePipelineLayout(const PipelineLayoutDesc& desc)
@@ -898,7 +893,7 @@ GraphicsPipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipeli
     const vk::PipelineViewportStateCreateInfo viewport{.viewportCount = 1u, .scissorCount = 1u};
 
     const vk::PipelineRasterizationStateCreateInfo rasterizer{.polygonMode = vk::PolygonMode::eFill,
-                                                              .cullMode = ToVkCullMode(desc.Cull),
+                                                              .cullMode = ToVk(desc.Cull),
                                                               .frontFace =
                                                                   vk::FrontFace::eCounterClockwise,
                                                               .lineWidth = 1.f};
@@ -1115,6 +1110,17 @@ void VulkanDevice::Submit(const SubmitDesc& desc)
     {
         const VulkanCommandList* pList =
             static_cast<const VulkanCommandList*>(desc.CommandLists[i]);
+
+        // A command buffer may only be submitted to a queue of the family it was
+        // allocated from. Checked here because nothing else will: the driver is
+        // entitled to accept it, and validation does not reliably say otherwise.
+        if (pList->Queue() != desc.Queue)
+        {
+            throw std::runtime_error(
+                "Rhi::VulkanDevice::Submit: a command list allocated for one queue type was "
+                "submitted to another. Its allocator's QueueType must match the submission's.");
+        }
+
         lists[i] = vk::CommandBufferSubmitInfo{.commandBuffer = pList->Native()};
     }
 

@@ -58,8 +58,8 @@ vk::BufferImageCopy MakeVkCopy(const BufferTextureCopyRegion& region)
 }
 } // namespace
 
-VulkanCommandList::VulkanCommandList(VulkanDevice& device, vk::CommandBuffer cmd)
-    : m_Device(device), m_Cmd(cmd)
+VulkanCommandList::VulkanCommandList(VulkanDevice& device, vk::CommandBuffer cmd, QueueType queue)
+    : m_Device(device), m_Cmd(cmd), m_Queue(queue)
 {
 }
 
@@ -83,6 +83,30 @@ void VulkanCommandList::SetComputeBindGroup(PipelineLayoutHandle layout, uint32_
 void VulkanCommandList::Dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ)
 {
     m_Cmd.dispatch(groupsX, groupsY, groupsZ);
+}
+
+void VulkanCommandList::SetVertexBuffer(uint32_t slot, BufferHandle buffer, uint64_t offset)
+{
+    m_Cmd.bindVertexBuffers(slot, m_Device.GetBuffer(buffer), offset);
+}
+
+void VulkanCommandList::SetIndexBuffer(BufferHandle buffer, IndexFormat format, uint64_t offset)
+{
+    m_Cmd.bindIndexBuffer(m_Device.GetBuffer(buffer), offset,
+                          format == IndexFormat::Uint16 ? vk::IndexType::eUint16
+                                                        : vk::IndexType::eUint32);
+}
+
+void VulkanCommandList::SetCullMode(CullMode mode)
+{
+    m_Cmd.setCullMode(ToVk(mode));
+}
+
+void VulkanCommandList::DrawIndexed(uint32_t indexCount, uint32_t instanceCount,
+                                    uint32_t firstIndex, int32_t vertexOffset,
+                                    uint32_t firstInstance)
+{
+    m_Cmd.drawIndexed(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 }
 
 void VulkanCommandList::SetBindGroup(PipelineLayoutHandle layout, uint32_t slot,

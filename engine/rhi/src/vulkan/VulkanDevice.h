@@ -169,7 +169,22 @@ public:
      * work is still submitted to the graphics queue, so that family is known
      * but idle.
      */
-    uint32_t GetQueueFamily(QueueType role) const { return m_QueueFamilies.Get(role); }
+    /**
+     * The family of the queue GetQueue(role) will actually return -- not merely a
+     * family that could serve the role.
+     *
+     * The distinction is load-bearing: a command buffer may only be submitted to
+     * a queue of the family it was allocated from, so a command allocator built
+     * for a role and a submission to that same role have to agree. They did not
+     * for Compute, whose family can be dedicated while no compute queue is ever
+     * created, which made an allocator on the compute family submit to a graphics
+     * queue -- invalid, and reported by nothing.
+     *
+     * QueueFamilies::Get() answers the other question, which family *can* serve
+     * the role, and DeviceCaps::bHasDedicatedComputeQueue answers whether the
+     * hardware has one. Both stay truthful; this one describes where work goes.
+     */
+    uint32_t GetQueueFamily(QueueType role) const;
 
     /**
      * The queue to submit `role`'s work to. Falls back to the graphics queue

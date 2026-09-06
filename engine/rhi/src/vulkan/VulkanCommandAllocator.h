@@ -34,6 +34,9 @@ private:
     VulkanDevice& m_Device;
     std::string m_DebugName;
 
+    /** Fixed at creation, and stamped on every list this hands out. */
+    QueueType m_Queue;
+
     vk::raii::CommandPool m_Pool = nullptr;
 
     /**

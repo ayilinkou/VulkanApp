@@ -21,11 +21,15 @@
  * point: the leak is *listed*, in one file, rather than spread through the
  * renderer where nobody can count it.
  *
- * The RAII accessors below are a wider hole than the ImGui one, and a temporary
- * one. They exist because the renderer still creates Vulkan objects directly —
- * swapchains, pipelines, descriptor sets — and cannot do that from raw C
- * handles. Every resource type that moves behind IDevice removes callers from
- * this list, and the last of them removes the accessors.
+ * What is left is permanent by design. ImGui's Vulkan backend takes raw
+ * instance, device and queue handles, a VkCommandBuffer by value, a VkFormat and
+ * a VkPipelineCache; a D3D12 build answers that with a sibling file rather than
+ * an edit. The physical device is here for one query the neutral API cannot yet
+ * answer — which depth formats this hardware supports — and goes when it can.
+ *
+ * The transitional half is gone: the RAII accessors, the buffer, view, sampler
+ * and semaphore resolvers, and WrapCommandList all existed because the renderer
+ * built Vulkan objects itself, and it no longer does.
  */
 namespace Hikari::Rhi::Vulkan
 {
@@ -43,84 +47,12 @@ struct NativeDevice
 NativeDevice GetNative(IDevice& device);
 
 /**
- * Transitional accessors for code that still builds Vulkan objects itself.
- * Each returns a reference into the device, so it stays valid for as long as the
- * device does and must not outlive it.
- *
- * There is deliberately no instance accessor here: nothing outside this module
- * needs one now that surface creation lives inside it, and the raw handle is
- * already in NativeDevice for ImGui's benefit.
+ * The physical device, for the one question the neutral API cannot yet answer:
+ * which depth formats this hardware actually supports. The renderer picks its
+ * depth format by querying VkFormatProperties, and there is no neutral
+ * "is this format usable for this" on IDevice. This goes when there is.
  */
 vk::raii::PhysicalDevice& GetPhysicalDevice(IDevice& device);
-vk::raii::Device& GetDevice(IDevice& device);
-vk::raii::Queue& GetGraphicsQueue(IDevice& device);
-uint32_t GetGraphicsQueueFamily(IDevice& device);
-
-/**
- * The buffer a handle names, or a null vk::Buffer if the handle is stale.
- *
- * Wider than it looks, and the narrowest thing that works today: the renderer
- * still records draws and writes descriptor sets itself, and vkCmdBindVertexBuffers,
- * vkCmdBindIndexBuffer, vkCmdCopyBufferToImage and VkDescriptorBufferInfo all
- * take a VkBuffer. Every one of those call sites moves behind ICommandList or a
- * neutral descriptor model later; this goes away with the last of them.
- */
-vk::Buffer GetBuffer(IDevice& device, BufferHandle handle);
-
-/**
- * The view and sampler a handle names, or a null object if the handle is stale.
- * Same shape as GetBuffer and there for the same reason: descriptor writes
- * (VkDescriptorImageInfo) and dynamic rendering attachments
- * (vk::RenderingAttachmentInfo) both take raw Vulkan objects, and both still
- * happen in the renderer — descriptor writes until bindless, attachments until
- * Stage 8's frame graph. They go away with those call sites.
- *
- * There is deliberately no GetImage: nothing outside this module names an image
- * any more. Barriers and copies take a TextureHandle through ICommandList, and
- * that is the whole of what a VkImage was reached for.
- */
-vk::ImageView GetImageView(IDevice& device, TextureViewHandle handle);
-vk::Sampler GetSampler(IDevice& device, SamplerHandle handle);
-
-/**
- * The descriptor set a bind group names, or a null set if the handle is stale.
- *
- * Transitional, and narrower than it looks. Binding a group needs a pipeline
- * layout, which is not neutral until pipelines are (plan D23) -- so the renderer
- * creates its groups through IDevice and still binds them with
- * vkCmdBindDescriptorSets against a VkPipelineLayout it owns. This goes with
- * that call, when SetBindGroup lands alongside PipelineLayoutHandle.
- */
-vk::DescriptorSet GetDescriptorSet(IDevice& device, BindGroupHandle handle);
-
-/**
- * The layout a bind group layout handle names. Transitional for the same reason
- * and with the same expiry: pipeline layout creation is Vulkan-side until D23
- * makes PipelineLayoutHandle neutral.
- */
-vk::DescriptorSetLayout GetDescriptorSetLayout(IDevice& device, BindGroupLayoutHandle handle);
-
-/**
- * The semaphore a handle names, or a null vk::Semaphore if the handle is stale.
- *
- * Only IPresentTarget produces a SemaphoreHandle, and this is how the caller
- * turns one into something it can put in its own VkSubmitInfo. It exists because
- * the frame loop still builds and submits its own command buffers; when
- * submission moves behind the RHI in Stage 8, the target waits and signals
- * internally and this goes with it.
- */
-vk::Semaphore GetSemaphore(IDevice& device, SemaphoreHandle handle);
-
-/**
- * A neutral command list recording into a VkCommandBuffer the caller owns and
- * submits. Records only barriers and copies; draws stay on the raw buffer until
- * Stage 8 (plan D7, D8).
- *
- * Returns an owning pointer because the concrete type is module-private. It
- * holds no Vulkan resource of its own, so destroying it records and frees
- * nothing — the command buffer's lifetime is entirely the caller's.
- */
-[[nodiscard]] std::unique_ptr<ICommandList> WrapCommandList(IDevice& device, vk::CommandBuffer cmd);
 
 /**
  * The buffer a command list records into.

@@ -1,9 +1,8 @@
 #include "CloudSystem.h"
 #include <core/Log.h>
 #include <rhi/BarrierPresets.h>
+#include <rhi/ICommandAllocator.h>
 #include <rhi/ICommandList.h>
-#include <rhi/vulkan/CommandListUtil.h>
-#include <rhi/vulkan/VulkanNative.h>
 
 #include <platform/FileSystem.h>
 
@@ -12,15 +11,13 @@
 using namespace Hikari;
 using namespace Hikari::Core;
 using namespace Hikari::Platform;
-using namespace Hikari::Rhi::Vulkan;
 
 inline constexpr LogCategory LogCloudSystem{"Cloud System"};
 
 const uint32_t CloudSystem::s_NOISE_RES = 128u;
 
 CloudSystem::CloudSystem(CloudSystemCreateInfo createInfo)
-    : m_RhiDevice(createInfo.RhiDevice), m_Device(Rhi::Vulkan::GetDevice(createInfo.RhiDevice)),
-      m_FramesInFlight(createInfo.FramesInFlight)
+    : m_RhiDevice(createInfo.RhiDevice), m_FramesInFlight(createInfo.FramesInFlight)
 {
     Init(createInfo);
 }
@@ -37,7 +34,7 @@ void CloudSystem::Init(const CloudSystemCreateInfo& createInfo)
                    createInfo.DepthSetLayout);
     CreateBakePipeline(createInfo.ContentPaths, createInfo.PipelineCache);
     CreateBindGroups();
-    BakeNoiseTexture(createInfo.CommandPool, createInfo.ComputeQueue);
+    BakeNoiseTexture();
 }
 
 void CloudSystem::Resize(uint32_t width, uint32_t height)
@@ -226,14 +223,24 @@ void CloudSystem::CreateNoiseTexture()
                 Rhi::TextureViewDimension::Texture3D);
 }
 
-void CloudSystem::BakeNoiseTexture(vk::raii::CommandPool& commandPool,
-                                   vk::raii::Queue& computeQueue)
+void CloudSystem::BakeNoiseTexture()
 {
     LogMsg(LogSeverity::Info, LogCloudSystem, "Baking perlin worley texture ({}x{}x{})",
            s_NOISE_RES, s_NOISE_RES, s_NOISE_RES);
 
-    vk::raii::CommandBuffer cmd = BeginSingleTimeCommand(m_Device, commandPool);
-    std::unique_ptr<Rhi::ICommandList> list = Rhi::Vulkan::WrapCommandList(m_RhiDevice, *cmd);
+    // Graphics, not Compute, even though this is a dispatch. The device reports
+    // whether an async compute queue exists (DeviceCaps::bHasDedicatedComputeQueue),
+    // but using it would hand the noise volume between queue families -- written
+    // here, sampled by the frame's dispatch -- and nothing owns that transfer yet.
+    // The cloud work shares the graphics queue until it does.
+    //
+    // A one-shot allocator of its own: this runs once at startup, and sharing one
+    // with the frame loop would mean resetting storage the frame loop is using.
+    const std::unique_ptr<Rhi::ICommandAllocator> allocator = m_RhiDevice.CreateCommandAllocator(
+        Rhi::CommandAllocatorDesc{.Queue = Rhi::QueueType::Graphics, .DebugName = "Cloud Bake"});
+
+    Rhi::ICommandList* list = &allocator->Acquire();
+    list->Begin();
 
     list->Barrier(Rhi::BarrierPresets::UndefinedToUnorderedAccess().On(m_PerlinWorley.GetHandle()));
 
@@ -254,7 +261,20 @@ void CloudSystem::BakeNoiseTexture(vk::raii::CommandPool& commandPool,
             .On(m_PerlinWorley.GetHandle()));
 
     // TODO: move to a read only image
-    EndSingleTimeCommand(cmd, computeQueue);
+    list->End();
+
+    // Waited on rather than left running: everything after this reads the noise,
+    // and the bake is startup work whose cost is paid once either way.
+    const Rhi::UniqueHandle<Rhi::FenceHandle> fence(
+        m_RhiDevice, m_RhiDevice.CreateFence(Rhi::FenceDesc{.DebugName = "Cloud Bake"}));
+    constexpr uint64_t kDone = 1u;
+    const Rhi::FenceOperation signal{.Fence = fence.Get(), .Value = kDone};
+
+    m_RhiDevice.Submit(Rhi::SubmitDesc{.Queue = Rhi::QueueType::Graphics,
+                                       .CommandLists = {&list, 1u},
+                                       .SignalFences = {&signal, 1u}});
+
+    m_RhiDevice.WaitForFence(fence.Get(), kDone);
 }
 
 void CloudSystem::CreateTextureSampler()

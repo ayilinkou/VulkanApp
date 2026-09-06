@@ -814,41 +814,44 @@ applies to every step here without anything being switched on first.
   implementation fail to report the out-of-pool condition it should. The pool now carries a size
   for every `BindingType`.
 
-### 8 — The composite recorder
+### 8–11 — The recorders
 
-- **Do:** `SetPipeline`, `SetBindGroup`, vertex and index buffer binding, `DrawIndexed`. Move
-  `RecordCompositeCommandBuffer` onto them.
-- **Why first of the four:** one draw, one bind group, no per-batch loop. It is the smallest
-  possible proof that the recording API works before it is applied to anything harder.
-- **Verify:** baseline unchanged.
-- **Size:** M
+Written as four steps, one per recorder, and built as four; committed as one, because after
+steps 6 and 7 each had shrunk to binding geometry and issuing a draw.
 
-### 9 — The opaque recorder
+- **Do:** `SetVertexBuffer`, `SetIndexBuffer`, `SetCullMode` and `DrawIndexed` on `ICommandList`,
+  then move the composite, opaque, transparent and cloud recorders onto them. Composite first:
+  one draw, one bind group, no per-batch loop, so it is the smallest proof the recording API
+  works before it is applied to anything harder.
+- **Retires:** `CommandListUtil.h`, `CloudSystem.cpp`'s two remaining entries, and
+  `Engine.cpp`'s `VulkanNative.h`. **3 transitional headers used from 5 sites.**
+- **Verify:** baseline unchanged, with an unchanged screenshot as the load-bearing evidence
+  rather than a formality.
+- **Size:** M across the four.
+- **Done.** Four things worth recording.
 
-- **Do:** move `RecordOpaqueCommandBuffer`, including `PushConstants` for `MaterialData` — a
-  neutral call now that a layout is neutral (D14, D23); the Vulkan and D3D12 forms were always
-  1:1 and only the layout blocked it.
-- **Verify:** baseline unchanged. This is the step where an unchanged screenshot is the
-  load-bearing evidence rather than a formality.
-- **Size:** M
+  **The compiler found the finish line.** Once the draws were neutral, `-Wunused-but-set-variable`
+  fired on the `cmd` variable in all three surface recorders at once — none of them had any
+  remaining use for a raw command buffer. The same happened to `NativeSet`, `NativeSetLayout` and
+  `NativeView`, the transitional accessors added at steps 4 and 6: each was left with only its
+  own definition, so all three are gone along with the `GetDescriptorSet` and
+  `GetDescriptorSetLayout` hatch functions they wrapped.
 
-### 10 — The transparent recorder
+  **The noise bake now submits through the RHI**, which is what retired `CommandListUtil` — it
+  begins, submits and waits on a one-shot buffer, so it needed both submission (step 2) and
+  dispatch recording (step 7) before it could go. With it went the engine's last raw command
+  pool: `CreateCommandPools` and `m_GenericCommandPool` are deleted outright.
 
-- **Do:** move `RecordTransparentCommandBuffer`.
-- **Retires:** `Engine.cpp`'s `VulkanNative.h` entry — the last of its uses goes here.
-- **Verify:** baseline unchanged. See §10 on why the transparent path is the noisiest place in
-  the comparison.
-- **Size:** M
+  **The bake stays on the graphics queue, deliberately.** Converting it to `QueueType::Compute`
+  looked obvious -- it is a dispatch, and the device has a dedicated compute family -- and would
+  have been wrong: the noise volume is written there and sampled by the frame's dispatch, so it
+  would cross queue families with nothing owning the transfer. The old code passed the graphics
+  queue under the name `ComputeQueue` with a comment saying why; that reasoning now sits at the
+  submit itself.
 
-### 11 — The clouds recorder and the noise bake
-
-- **Do:** `Dispatch` on `ICommandList`. Move `CloudSystem::RecordDispatch` and
-  `BakeNoiseTexture`, and take `vk::raii` references out of `CloudSystemCreateInfo`.
-- **Retires:** `CloudSystem.cpp`'s `VulkanNative.h` and `CommandListUtil.h` entries. The latter
-  needed both step 2 (submission) and this step (dispatch recording), which is why it goes last
-  of the two.
-- **Verify:** baseline unchanged.
-- **Size:** M
+  **`CloudSystem` holds no Vulkan at all.** It kept a `vk::raii::Device&` since Stage 5 for
+  building pipelines and descriptors; both are neutral now, so the reference, the include and the
+  `using namespace` are gone.
 
 ### 12 — Seal the seam
 
@@ -862,6 +865,22 @@ applies to every step here without anything being switched on first.
   proposed here and taken then.
 - **Verify:** `rhi_boundary_check` passes against the reduced lists; `precommit.sh` green.
 - **Size:** M
+- **Done. 2 transitional headers used from 4 sites**, against 7 from 18 when the stage began.
+  §8 predicted 2 headers from **3** sites, so the header target is met exactly and the site count
+  is one over — see §8's own correction for the site nobody foresaw.
+
+  `VulkanNative.h` lost the RAII accessors, the buffer, view, sampler and semaphore resolvers,
+  `WrapCommandList`, and the two descriptor accessors added at steps 4 and 6. What remains is
+  permanent by design plus one exception: `GetPhysicalDevice`, kept for the depth-format query,
+  because the neutral API has no way to ask whether a format is usable for a given purpose. That
+  is the one thing the seal does not cover, and it is a missing query rather than a leak.
+
+  `DebugNames.h` left the transitional area by moving into `src/vulkan/`, as `DescriptorAllocator.h`
+  did at step 5: the RHI names its own objects with it, so the header lives on where nothing
+  outside can reach it.
+
+  **`Engine.cpp` went from 2,476 lines to 2,159** across the stage, without a single line moving
+  to a new home — every one of those 317 lines is Vulkan the renderer no longer writes.
 
 ---
 
@@ -988,13 +1007,22 @@ once step 1 added the validation-coverage test, which needs a queue until step 2
 
 The steps account for sixteen of those sites: step 2 two, step 3 one, step 5 six, step 6 one,
 step 7 one, step 10 one, step 11 two, step 12 the two remaining `DebugNames.h` entries. That leaves **2
-headers used from 3 sites**:
+headers used from 3 sites** — or so this predicted. It ended at **4**; the fourth is recorded
+below the table:
 
 | Header | Site | Why it stays |
 |---|---|---|
 | `VulkanNative.h` | `engine/editor/src/VulkanUiBackend.cpp` | ImGui's Vulkan backend takes raw handles. D9 is permanent by design: a D3D12 build gets a sibling file, not an edit |
 | `VulkanNative.h` | `tests/gpu/rhi/DeviceTests.cpp` | The escape hatch is what those cases assert on |
 | `SwapchainUtil.h` | `tests/unit/rhi/SwapchainUtilTests.cpp` | Deliberate, and argued in the check itself: the functions are pure and device-free so they can be unit tested, and `src/vulkan/` is on a PRIVATE include path a test cannot reach |
+
+
+**The fourth, which this section did not foresee: `Engine.cpp` still reaches for
+`GetPhysicalDevice`.** Depth format selection queries `VkFormatProperties` to find a format the
+hardware actually supports, and the neutral API has no way to ask whether a format is usable for
+a given purpose. That is a **missing query rather than a leak**: unlike the three above it is not
+permanent, and it goes the moment `IDevice` can answer the question. It is the one piece of
+Vulkan the renderer still writes.
 
 Note that `GetNative(ICommandList&)` survives step 12 along with the rest of the ImGui-shaped
 hole — ImGui's backend takes a `VkCommandBuffer` by value, and there is no neutral shape for
@@ -1087,6 +1115,10 @@ What that means in practice:
 - D26 is the exception that should **not** live here permanently. It is test strategy that
   applies to any two renderers, including two D3D12 driver versions, so it also lands in the
   architecture plan's Part III and outlives this document.
-- If `rhi_extraction_plan.md` is retired at step 12, this document is the natural place for
-  D0–D13 to land, which would put the whole D-series back in one file and make the numbering
-  continuity in §2 pay off.
+- **Both plans retire together, into one permanent `docs/rhi.md`.** Decided at step 12, along
+  with the decision not to do it yet. This document is not the host: it is a stage plan that
+  happens to carry decisions, and so is `rhi_extraction_plan.md`. The whole D-series — D0–D26,
+  less the two superseded — belongs in a file kept for the lifetime of the project, with both
+  step lists dropped and `rhi_extraction_plan.md` §10's promotion list as the outline.
+  The numbering continuity §2 was careful about is what makes that a merge rather than a
+  rewrite.

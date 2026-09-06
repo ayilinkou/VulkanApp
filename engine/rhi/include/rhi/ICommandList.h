@@ -151,6 +151,30 @@ public:
     virtual void Dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ) = 0;
 
     /**
+     * Binds the geometry a draw reads. `slot` matches the pipeline's
+     * VertexBufferLayout::Slot, so a mesh stream and an instance stream are two
+     * calls rather than one array -- they come from different owners and change
+     * at different rates.
+     */
+    virtual void SetVertexBuffer(uint32_t slot, BufferHandle buffer, uint64_t offset = 0u) = 0;
+    virtual void SetIndexBuffer(BufferHandle buffer, IndexFormat format, uint64_t offset = 0u) = 0;
+
+    /**
+     * Overrides the pipeline's cull mode, which is legal only on a pipeline that
+     * declared bDynamicCull. A two-sided material is a per-batch property, so
+     * this varies within a pass rather than between pipelines.
+     */
+    virtual void SetCullMode(CullMode mode) = 0;
+
+    /**
+     * `firstInstance` is why this takes five arguments rather than three: the
+     * renderer draws instanced batches out of one buffer, so a draw names its
+     * slice of it.
+     */
+    virtual void DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex,
+                             int32_t vertexOffset, uint32_t firstInstance) = 0;
+
+    /**
      * Viewport and scissor are always dynamic. Both APIs set them on the command
      * list rather than baking them into a pipeline, and a renderer that resizes
      * would otherwise rebuild every pipeline to change a number.

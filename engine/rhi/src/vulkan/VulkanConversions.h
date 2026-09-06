@@ -10,6 +10,7 @@
 #include <rhi/BindGroup.h>
 #include <rhi/BufferDesc.h>
 #include <rhi/Diagnostics.h>
+#include <rhi/Pipeline.h>
 #include <rhi/Rendering.h>
 #include <rhi/RhiTypes.h>
 #include <rhi/SamplerDesc.h>
@@ -65,6 +66,8 @@ namespace Hikari::Rhi::Vulkan
  * degenerate case worth expressing.
  */
 vk::ShaderStageFlags ToVk(ShaderStage stages);
+
+vk::CullModeFlags ToVk(CullMode mode);
 
 vk::AttachmentLoadOp ToVkLoadOp(LoadOp op);
 vk::AttachmentStoreOp ToVkStoreOp(StoreOp op);

@@ -65,6 +65,16 @@ struct ShaderStageDesc
     std::string EntryPoint;
 };
 
+/**
+ * How wide an index is. Two values because both APIs offer exactly these two;
+ * Vulkan's eUint8 needs an extension and D3D12 has no counterpart at all.
+ */
+enum class IndexFormat : uint8_t
+{
+    Uint16,
+    Uint32,
+};
+
 enum class VertexInputRate : uint8_t
 {
     Vertex,

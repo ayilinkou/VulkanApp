@@ -2,7 +2,7 @@
 
 #include <format>
 
-#include <rhi/vulkan/DebugNames.h>
+#include "vulkan/DebugNames.h"
 
 #include "VulkanDevice.h"
 
@@ -10,7 +10,7 @@ namespace Hikari::Rhi::Vulkan
 {
 VulkanCommandAllocator::VulkanCommandAllocator(VulkanDevice& device,
                                                const CommandAllocatorDesc& desc)
-    : m_Device(device), m_DebugName(desc.DebugName)
+    : m_Device(device), m_DebugName(desc.DebugName), m_Queue(desc.Queue)
 {
     const vk::CommandPoolCreateInfo createInfo{.queueFamilyIndex =
                                                    device.GetQueueFamily(desc.Queue)};
@@ -32,7 +32,8 @@ ICommandList& VulkanCommandAllocator::Acquire()
         SetVkDebugName(m_Device.GetDevice(), *m_Buffers.back(), vk::ObjectType::eCommandBuffer,
                        std::format("{} [{}]", m_DebugName, m_Lists.size()).c_str());
 
-        m_Lists.push_back(std::make_unique<VulkanCommandList>(m_Device, *m_Buffers.back()));
+        m_Lists.push_back(
+            std::make_unique<VulkanCommandList>(m_Device, *m_Buffers.back(), m_Queue));
     }
 
     return *m_Lists[m_Acquired++];

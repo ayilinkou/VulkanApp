@@ -58,7 +58,6 @@
 #include <rhi/TextureViewDesc.h>
 #include <rhi/UniqueHandle.h>
 #include <rhi/UploadContext.h>
-#include <rhi/vulkan/DebugNames.h>
 #include <rhi/vulkan/VulkanNative.h>
 
 #include <SDL3/SDL.h>
@@ -182,9 +181,6 @@ public:
           m_Config(config), m_JobSystem(jobSystem), m_Diagnostics(diagnostics),
           m_RhiDevice(Rhi::CreateDevice(MakeDeviceDesc())),
           m_PhysicalDevice(Rhi::Vulkan::GetPhysicalDevice(*m_RhiDevice)),
-          m_Device(Rhi::Vulkan::GetDevice(*m_RhiDevice)),
-          m_GraphicsQueue(Rhi::Vulkan::GetGraphicsQueue(*m_RhiDevice)),
-          m_QueueIndex(Rhi::Vulkan::GetGraphicsQueueFamily(*m_RhiDevice)),
           m_ProcessStart(processStart)
     {
         // Sized here rather than at first use: every per-frame resource below is
@@ -194,9 +190,9 @@ public:
     }
     ~Engine()
     {
-        if (!m_bShutdown && *m_Device)
+        if (!m_bShutdown)
         {
-            m_Device.waitIdle();
+            m_RhiDevice->WaitIdle();
             Shutdown();
         }
     }
@@ -350,7 +346,7 @@ public:
 
         // After both: the report reads the present target's extent and format,
         // and the capture reads the staging buffer the device still owns.
-        m_Device.waitIdle();
+        m_RhiDevice->WaitIdle();
         Shutdown();
 
         return result;
@@ -483,11 +479,6 @@ private:
         return vk::Extent2D{extent.Width, extent.Height};
     }
 
-    vk::Format SwapchainFormat() const
-    {
-        return Rhi::Vulkan::GetNativeFormat(m_PresentTarget->GetFormat());
-    }
-
     void InitVulkan()
     {
         LogMsg(LogSeverity::Info, LogRenderer, "InitVulkan()");
@@ -504,7 +495,6 @@ private:
 
         CreateDepthResources();
         CreateBindGroupLayouts();
-        CreateCommandPools();
         CreateTextureSampler();
 
         m_UploadContext = m_RhiDevice->CreateUploadContext(
@@ -539,14 +529,6 @@ private:
                                               .ContentPaths = m_Paths,
                                               .GlobalSetLayout = m_GlobalLayout.Get(),
                                               .DepthSetLayout = m_DepthLayout.Get(),
-                                              .CommandPool = m_GenericCommandPool,
-                                              // The device reports whether an async compute
-                                              // queue exists (DeviceCaps::
-                                              // bHasDedicatedComputeQueue); moving the cloud
-                                              // dispatches onto it needs them to own their own
-                                              // submission and cross-queue synchronization
-                                              // first, so they share the graphics queue.
-                                              .ComputeQueue = m_GraphicsQueue,
                                               .SwapchainWidth = SwapchainExtent().width,
                                               .SwapchainHeight = SwapchainExtent().height,
                                               .FramesInFlight = m_Config.FramesInFlight};
@@ -611,7 +593,7 @@ private:
      */
     CapturedFrame CaptureFinalFrame()
     {
-        m_Device.waitIdle();
+        m_RhiDevice->WaitIdle();
 
         if (!m_bScreenshotBufferReady)
         {
@@ -989,7 +971,7 @@ private:
                 {
                     std::string path = ImGuiFileDialog::Instance()->GetFilePathName();
 
-                    m_Device.waitIdle();
+                    m_RhiDevice->WaitIdle();
 
                     // Loading the new scene before unloading current scene.
                     // Speeds up load times by not unloading resources which are
@@ -1204,23 +1186,6 @@ private:
         CreateCompositePipeline();
     }
 
-    void CreateCommandPools()
-    {
-        LogMsg(LogSeverity::Info, LogRenderer, "CreateCommandPools()");
-
-        // The last raw pool the engine owns. The per-frame pools are
-        // ICommandAllocators now; this one stays because CloudSystem's noise bake
-        // reaches it through CommandListUtil, which begins, submits and waits on a
-        // one-shot buffer. That needs submission behind the RHI as well as dispatch
-        // recording, so it goes once both exist.
-        const vk::CommandPoolCreateInfo createInfo{
-            .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-            .queueFamilyIndex = m_QueueIndex};
-        m_GenericCommandPool = vk::raii::CommandPool(m_Device, createInfo);
-        SetVkDebugName(m_Device, *m_GenericCommandPool, vk::ObjectType::eCommandPool,
-                       "Generic Command Pool");
-    }
-
     void CreateCommandAllocators()
     {
         LogMsg(LogSeverity::Info, LogRenderer, "CreateCommandAllocators()");
@@ -1264,18 +1229,6 @@ private:
         return *recorder.List;
     }
 
-    /** The layout a bind group layout names, for the transitional pipeline path. */
-    vk::DescriptorSetLayout NativeSetLayout(Rhi::BindGroupLayoutHandle handle)
-    {
-        return Rhi::Vulkan::GetDescriptorSetLayout(*m_RhiDevice, handle);
-    }
-
-    /** The descriptor set a bind group names, for the transitional bind path. */
-    vk::DescriptorSet NativeSet(Rhi::BindGroupHandle handle)
-    {
-        return Rhi::Vulkan::GetDescriptorSet(*m_RhiDevice, handle);
-    }
-
     /** The whole render target, which is the only area any pass draws to. */
     Rhi::Rect2D WholeTarget() const
     {
@@ -1286,19 +1239,6 @@ private:
     {
         return Rhi::Viewport{.Width = static_cast<float>(SwapchainExtent().width),
                              .Height = static_cast<float>(SwapchainExtent().height)};
-    }
-
-    /**
-     * The VkImageView a handle names.
-     *
-     * Dynamic rendering attachments and descriptor writes both take raw Vulkan
-     * objects, and both still happen here — attachments until Stage 8's frame
-     * graph, descriptor writes until bindless. This is the one place that
-     * resolve is spelled out, so the call sites read as they did.
-     */
-    vk::ImageView NativeView(Rhi::TextureViewHandle handle)
-    {
-        return Rhi::Vulkan::GetImageView(*m_RhiDevice, handle);
     }
 
     /**
@@ -1336,7 +1276,6 @@ private:
     {
         FrameData& frame = m_Frames[m_FrameIndex];
         Rhi::ICommandList* list = &BeginRecording(frame.OpaqueCommands);
-        const vk::CommandBuffer cmd = Rhi::Vulkan::GetNative(*list);
 
         const std::array openingBarriers{
             Rhi::BarrierPresets::UndefinedToDepthStencilWrite().On(frame.DepthTexture.GetHandle()),
@@ -1359,8 +1298,7 @@ private:
         list->SetScissor(WholeTarget());
         list->SetBindGroup(m_OpaquePipelineLayout.Get(), 0, frame.GlobalBindGroup.Get());
 
-        cmd.bindVertexBuffers(1, Rhi::Vulkan::GetBuffer(*m_RhiDevice, frame.InstanceBuffer.Get()),
-                              {0});
+        list->SetVertexBuffer(1u, frame.InstanceBuffer.Get());
 
         // per mesh batch
         const std::vector<MeshBatch>& batches = m_ModelManager.GetOpaqueBatches();
@@ -1374,19 +1312,18 @@ private:
             // version did for a single-sided material, and what every material
             // shipped today being two-sided hid. Recording one more state token
             // per batch is not worth a rule about when it may be skipped.
-            cmd.setCullMode(batch.pMaterial->IsTwoSided() ? vk::CullModeFlagBits::eNone
-                                                          : vk::CullModeFlagBits::eBack);
+            list->SetCullMode(batch.pMaterial->IsTwoSided() ? Rhi::CullMode::None
+                                                            : Rhi::CullMode::Back);
 
-            cmd.bindVertexBuffers(0, Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.VertexBuffer), {0});
-            cmd.bindIndexBuffer(Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.IndexBuffer), 0,
-                                vk::IndexType::eUint32);
+            list->SetVertexBuffer(0u, batch.VertexBuffer);
+            list->SetIndexBuffer(batch.IndexBuffer, Rhi::IndexFormat::Uint32);
             list->SetBindGroup(m_OpaquePipelineLayout.Get(), 1, batch.pMaterial->GetBindGroup());
             const auto& materialData = *static_cast<const PBRMaterial::MaterialData*>(
                 batch.pMaterial->GetPushConstantData());
             list->PushConstants(m_OpaquePipelineLayout.Get(), Rhi::ShaderStage::Pixel, 0u,
                                 std::as_bytes(std::span(&materialData, 1)));
-            cmd.drawIndexed(batch.IndexCount, batch.InstanceCount, batch.FirstIndex, 0,
-                            batch.FirstInstance);
+            list->DrawIndexed(batch.IndexCount, batch.InstanceCount, batch.FirstIndex, 0,
+                              batch.FirstInstance);
             instanceCount += batch.InstanceCount;
         }
         m_OpaqueDrawCallCount = static_cast<uint32_t>(batches.size());
@@ -1413,7 +1350,6 @@ private:
     {
         FrameData& frame = m_Frames[m_FrameIndex];
         Rhi::ICommandList* list = &BeginRecording(frame.TransparentCommands);
-        const vk::CommandBuffer cmd = Rhi::Vulkan::GetNative(*list);
 
         const std::array openingBarriers{
             Rhi::BarrierPresets::UndefinedToRenderTarget().On(frame.AccumTexture.GetHandle()),
@@ -1443,25 +1379,23 @@ private:
         list->SetScissor(WholeTarget());
         list->SetBindGroup(m_TransparentPipelineLayout.Get(), 0, frame.GlobalBindGroup.Get());
 
-        cmd.bindVertexBuffers(1, Rhi::Vulkan::GetBuffer(*m_RhiDevice, frame.InstanceBuffer.Get()),
-                              {0});
+        list->SetVertexBuffer(1u, frame.InstanceBuffer.Get());
 
         // per mesh batch
         const std::vector<MeshBatch>& batches = m_ModelManager.GetTransparentBatches();
         uint32_t instanceCount = 0;
         for (const MeshBatch& batch : batches)
         {
-            cmd.bindVertexBuffers(0, Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.VertexBuffer), {0});
-            cmd.bindIndexBuffer(Rhi::Vulkan::GetBuffer(*m_RhiDevice, batch.IndexBuffer), 0,
-                                vk::IndexType::eUint32);
+            list->SetVertexBuffer(0u, batch.VertexBuffer);
+            list->SetIndexBuffer(batch.IndexBuffer, Rhi::IndexFormat::Uint32);
             list->SetBindGroup(m_TransparentPipelineLayout.Get(), 1,
                                batch.pMaterial->GetBindGroup());
             const auto& materialData = *static_cast<const PBRMaterial::MaterialData*>(
                 batch.pMaterial->GetPushConstantData());
             list->PushConstants(m_TransparentPipelineLayout.Get(), Rhi::ShaderStage::Pixel, 0u,
                                 std::as_bytes(std::span(&materialData, 1)));
-            cmd.drawIndexed(batch.IndexCount, batch.InstanceCount, batch.FirstIndex, 0,
-                            batch.FirstInstance);
+            list->DrawIndexed(batch.IndexCount, batch.InstanceCount, batch.FirstIndex, 0,
+                              batch.FirstInstance);
             instanceCount += batch.InstanceCount;
         }
         m_TransparentDrawCallCount = static_cast<uint32_t>(batches.size());
@@ -1477,7 +1411,6 @@ private:
     {
         FrameData& frame = m_Frames[m_FrameIndex];
         Rhi::ICommandList* list = &BeginRecording(frame.CompositeCommands);
-        const vk::CommandBuffer cmd = Rhi::Vulkan::GetNative(*list);
 
         const std::array openingBarriers{
             Rhi::BarrierPresets::RenderTargetToShaderResource().On(frame.OpaqueTexture.GetHandle()),
@@ -1499,13 +1432,11 @@ private:
         list->SetBindGroup(m_CompositePipelineLayout.Get(), 0u, frame.GlobalBindGroup.Get());
         list->SetBindGroup(m_CompositePipelineLayout.Get(), 1u, frame.CompositeBindGroup.Get());
 
-        cmd.bindVertexBuffers(0u, Rhi::Vulkan::GetBuffer(*m_RhiDevice, m_QuadVertexBuffer.Get()),
-                              {0});
-        cmd.bindIndexBuffer(Rhi::Vulkan::GetBuffer(*m_RhiDevice, m_QuadIndexBuffer.Get()), 0u,
-                            vk::IndexType::eUint32);
+        list->SetVertexBuffer(0u, m_QuadVertexBuffer.Get());
+        list->SetIndexBuffer(m_QuadIndexBuffer.Get(), Rhi::IndexFormat::Uint32);
 
         constexpr uint32_t QUAD_INDEX_COUNT = 6u;
-        cmd.drawIndexed(QUAD_INDEX_COUNT, 1u, 0u, 0, 0u);
+        list->DrawIndexed(QUAD_INDEX_COUNT, 1u, 0u, 0, 0u);
 
         list->EndRendering();
 
@@ -2081,8 +2012,6 @@ private:
      * resource type moves behind IDevice.
      */
     vk::raii::PhysicalDevice& m_PhysicalDevice;
-    vk::raii::Device& m_Device;
-    vk::raii::Queue& m_GraphicsQueue;
 
     /**
      * The frame loop's fence, and the last value handed to it. Monotonic, so it
@@ -2091,7 +2020,6 @@ private:
      */
     Rhi::UniqueHandle<Rhi::FenceHandle> m_FrameFence;
     uint64_t m_FrameSubmitCount = 0u;
-    uint32_t m_QueueIndex;
 
     std::unique_ptr<Rhi::IPresentTarget> m_PresentTarget;
     Rhi::UniqueHandle<Rhi::PipelineLayoutHandle> m_OpaquePipelineLayout;
@@ -2106,7 +2034,6 @@ private:
      * changes, and rebuilding it needs the modules it was made from.
      */
     std::vector<Rhi::UniqueHandle<Rhi::ShaderModuleHandle>> m_ShaderModules;
-    vk::raii::CommandPool m_GenericCommandPool = nullptr;
     GlobalBuffer m_GlobalBuffer = {};
     Rhi::UniqueHandle<Rhi::SamplerHandle> m_TextureSampler;
     Rhi::UniqueHandle<Rhi::BindGroupLayoutHandle> m_GlobalLayout;

@@ -130,10 +130,11 @@ message(STATUS "rhi_boundary_check: ${header_count} neutral RHI header(s) free o
 set(transitional_headers
     # The escape hatch itself (D9): instance/device/queue for ImGui, and the
     # VkFormat/VkPipelineCache accessors the app's pipeline creation needs.
+    # The permanent residue (D9). ImGui's Vulkan backend takes raw handles and a
+    # VkCommandBuffer by value, so a D3D12 build answers with a sibling file
+    # rather than an edit. The one non-ImGui entry is the physical device, for a
+    # depth-format query the neutral API cannot yet express.
     "VulkanNative.h"
-    # Names Vulkan objects the application still creates for itself. Shrinks as
-    # those move behind the RHI; it is a template, so it cannot move to src/.
-    "DebugNames.h"
     # Pure functions over surface query results. Its only production caller is
     # now SwapchainTarget, inside the module, so this could move to src/vulkan/
     # and shrink the list. It is kept here deliberately: the functions are pure
@@ -143,11 +144,7 @@ set(transitional_headers
     # surface into states a real display cannot be asked for on demand, a zero
     # extent among them. Reconsider if it grows past choosing surface
     # parameters, or if it acquires state or a device dependency.
-    "SwapchainUtil.h"
-    # Begin/submit/wait for a one-shot command buffer. The remaining caller
-    # records a compute dispatch, so it needs both halves: submission behind
-    # IDevice (Stage 7.5 step 2) and Dispatch on ICommandList (step 11).
-    "CommandListUtil.h")
+    "SwapchainUtil.h")
 
 set(transitional_dir "${neutral_dir}/vulkan")
 file(GLOB transitional_present RELATIVE "${transitional_dir}" "${transitional_dir}/*.h")
@@ -197,10 +194,7 @@ endforeach()
 
 set(transitional_allowlist
     "engine/editor/src/VulkanUiBackend.cpp|VulkanNative.h|ImGui's backend takes instance/device/queue and a VkCommandBuffer by value (D9)"
-    "engine/engine/src/Engine.cpp|VulkanNative.h|The frame loop still records raw draws — last use goes at step 10"
-    "engine/engine/src/Engine.cpp|DebugNames.h|Names the pools, sets and sync objects the engine still owns (step 12)"
-    "engine/engine/src/CloudSystem.cpp|VulkanNative.h|Raw dispatch recording needs the device — goes at step 11"
-    "engine/engine/src/CloudSystem.cpp|CommandListUtil.h|The noise bake is a dispatch, not a copy — needs steps 2 and 11"
+    "engine/engine/src/Engine.cpp|VulkanNative.h|Depth format selection queries VkFormatProperties, which no neutral call can ask"
     "tests/unit/rhi/SwapchainUtilTests.cpp|SwapchainUtil.h|Surface states a real display cannot be put into on demand"
     "tests/gpu/rhi/DeviceTests.cpp|VulkanNative.h|The escape hatch is what these cases assert on"
 )

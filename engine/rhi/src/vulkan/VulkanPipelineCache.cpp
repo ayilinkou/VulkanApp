@@ -11,7 +11,7 @@
 
 #include <core/Log.h>
 
-#include <rhi/vulkan/DebugNames.h>
+#include "vulkan/DebugNames.h"
 
 namespace Hikari::Rhi::Vulkan
 {

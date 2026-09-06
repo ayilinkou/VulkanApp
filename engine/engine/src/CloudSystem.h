@@ -4,8 +4,6 @@
 #include <vector>
 
 #include "glm/glm.hpp"
-#include "vulkan/vulkan_raii.hpp"
-
 #include <platform/Paths.h>
 
 #include <rhi/Barrier.h>
@@ -26,8 +24,6 @@ struct CloudSystemCreateInfo
     const Hikari::Platform::Paths& ContentPaths;
     Hikari::Rhi::BindGroupLayoutHandle GlobalSetLayout;
     Hikari::Rhi::BindGroupLayoutHandle DepthSetLayout;
-    vk::raii::CommandPool& CommandPool;
-    vk::raii::Queue& ComputeQueue;
     uint32_t SwapchainWidth;
     uint32_t SwapchainHeight;
     uint32_t FramesInFlight;
@@ -86,7 +82,7 @@ private:
                         Hikari::Rhi::BindGroupLayoutHandle depthLayout);
     void CreateBakePipeline(const Hikari::Platform::Paths& paths,
                             Hikari::Rhi::IPipelineCache& pipelineCache);
-    void BakeNoiseTexture(vk::raii::CommandPool& commandPool, vk::raii::Queue& computeQueue);
+    void BakeNoiseTexture();
     void CreateTextureSampler();
 
 private:
@@ -97,12 +93,6 @@ private:
      * handles they hold are released through it.
      */
     Hikari::Rhi::IDevice& m_RhiDevice;
-
-    /**
-     * Borrowed from m_RhiDevice. Still needed because pipelines and descriptors
-     * stay Vulkan-shaped for the whole of Stage 5 (plan D7, D8).
-     */
-    vk::raii::Device& m_Device;
 
     Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupLayoutHandle> m_SetLayout;
     Hikari::Rhi::UniqueHandle<Hikari::Rhi::BindGroupLayoutHandle> m_BakeSetLayout;

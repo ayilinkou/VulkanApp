@@ -22,6 +22,21 @@ vk::ShaderStageFlags ToVk(ShaderStage stages)
     return result;
 }
 
+vk::CullModeFlags ToVk(CullMode mode)
+{
+    switch (mode)
+    {
+        case CullMode::None:
+            return vk::CullModeFlagBits::eNone;
+        case CullMode::Front:
+            return vk::CullModeFlagBits::eFront;
+        case CullMode::Back:
+            return vk::CullModeFlagBits::eBack;
+    }
+
+    throw std::runtime_error("Rhi::VulkanDevice: unmapped CullMode.");
+}
+
 vk::AttachmentLoadOp ToVkLoadOp(LoadOp op)
 {
     switch (op)
